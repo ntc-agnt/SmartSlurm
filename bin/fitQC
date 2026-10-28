@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# fitQC -- regression quality-control for the SmartSlurm jobRecord.
+#
+# A standalone, on-cluster, pure bash+awk tool to (1) ASSESS the per-group
+# resource fit, (2) IDENTIFY outliers, and (3) (later) REMOVE them from the
+# store. It inspects exactly the data the estimator fits: one linear fit per
+# (pipeline, step, refGroup) over COMPLETED rows, x = inputSize, y = memUsed
+# (or timeUsed). awk does the MATH (OLS, R2, STDFIT, residuals, leverage,
+# Cook's D); gnuplot (--plot, `set term dumb`) is the only thing that draws.
+#
+# Two views, so a store with thousands of rows and dozens of steps stays legible:
+#   fitQC                 L1 triage: one line per group, worst fits first.
+#   fitQC P/S/R [P/S/R..] L2 detail: fit header + ranked outlier candidates.
+# Group keys are pipeline/step/refGroup (slash-joined; copy them from L1).
+#
+# This supersedes the off-cluster bin/reviewJobRecords.py (no Python, runs on
+# the cluster). Read-only in this version; --remove lands next.
+# ---------------------------------------------------------------------------
+set -u
+
+self=$(basename "$0")
+usage() {
+    cat >&2 <<EOF
+$self -- jobRecord regression QC (assess fits, rank outliers)
+
+  $self                         triage: one line per group, worst first
+  $self PIPE/STEP/REF ...       detail for one or more groups
+  $self --pipeline P --step S --ref R   detail by explicit fields
+
+Options:
+  --store FILE     read this jobRecord file (default: from config.txt)
+  --metric mem|time   which fit to inspect (default: mem)
+  --worst N        limit rows: top-N groups (triage) / top-N points (detail)
+  --resid-cut X    |studentized residual| above which a point is an outlier (default 2)
+  --r2-below X     triage: only groups with R2 < X
+  --min-n N        ignore groups with fewer than N points (default 3; the fit floor)
+  --pipeline P     triage/detail: restrict to pipeline P (substring)
+  --step S         restrict to step S (substring)
+  --ref R          restrict to ref/refGroup R (substring)
+  --all            triage: also show healthy groups (hidden by default)
+  --plot           detail: add a gnuplot ASCII scatter + fit line
+  -h, --help       this help
+EOF
+    exit "${1:-0}"
+}
+
+# --- schema SSOT (jrEmitV2, JR_AWK_COLMAP, jrRefClass, JR_REF_CLASS) --------
+_bindir=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$_bindir/jobRecordSchema.sh" 2>/dev/null || { echo "$self: cannot source jobRecordSchema.sh" >&2; exit 1; }
+
+# --- args ------------------------------------------------------------------
+store=""; metric="mem"; worst=0; residCut=2; r2below=""; minN=3
+fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
+groups=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --store)     store=$2; shift 2;;
+        --metric)    metric=$2; shift 2;;
+        --worst)     worst=$2; shift 2;;
+        --resid-cut) residCut=$2; shift 2;;
+        --r2-below)  r2below=$2; shift 2;;
+        --min-n)     minN=$2; shift 2;;
+        --pipeline)  fPipe=$2; shift 2;;
+        --step|--program) fStep=$2; shift 2;;
+        --ref)       fRef=$2; shift 2;;
+        --all)       showAll=1; shift;;
+        --plot)      doPlot=1; shift;;
+        -h|--help)   usage 0;;
+        --)          shift; while [ $# -gt 0 ]; do groups+=("$1"); shift; done;;
+        -*)          echo "$self: unknown option: $1" >&2; usage 1;;
+        *)           groups+=("$1"); shift;;
+    esac
+done
+case "$metric" in mem|time) ;; *) echo "$self: --metric must be mem or time" >&2; exit 1;; esac
+
+# --- locate the store ------------------------------------------------------
+if [ -z "$store" ]; then
+    if [ -f ~/.smartSlurm/config/config.txt ]; then
+        # shellcheck source=/dev/null
+        . ~/.smartSlurm/config/config.txt 2>/dev/null
+    elif [ -f "$_bindir/../config/config.txt" ]; then
+        # shellcheck source=/dev/null
+        . "$_bindir/../config/config.txt" 2>/dev/null
+    fi
+    store="${smartSlurmJobRecordDir:-}/jobRecord.txt"
+fi
+[ -s "$store" ] || { echo "$self: jobRecord not found or empty: $store" >&2; exit 1; }
+if [ "$(jrSchemaVersion "$store")" != 2 ]; then
+    echo "$self: $store is not the v2 schema. Convert it first with jrRepair.sh." >&2
+    exit 1
+fi
+
+# Normalize any PIPE/STEP/REF group selectors: map the ref component through
+# jrRefClass so a user can type the raw ref (hg38) or the pooled group (mammal).
+wantKeys=""
+for g in "${groups[@]:-}"; do
+    [ -z "$g" ] && continue
+    p=${g%%/*}; rest=${g#*/}; s=${rest%%/*}; r=${rest#*/}
+    [ "$r" = "$rest" ] && r=""        # only two components given -> no ref
+    rg=$(jrRefClass "$r")
+    wantKeys="$wantKeys $p/$s/$rg"
+done
+wantKeys="${wantKeys# }"
+
+metricCol=memUsed; [ "$metric" = time ] && metricCol=timeUsed
+
+# --- the engine: one awk pass builds per-group points, then fits + diagnoses.
+# Mirrors jrRefClass() for the refGroup (from JR_REF_CLASS) so grouping matches
+# the estimator exactly. Statistics: OLS y=a*x+b, R2, STDFIT=sqrt(SSE/(n-2)),
+# leverage h=1/n+(x-xbar)^2/Sxx, studentized residual e/(s*sqrt(1-h)),
+# Cook's D = (e^2/(p*s^2))*(h/(1-h)^2) with p=2.
+jrEmitV2 "$store" | awk -F, \
+    -v mcol="$metricCol" -v refmap="$JR_REF_CLASS" \
+    -v mode="$([ ${#groups[@]} -gt 0 ] && echo detail || echo triage)" \
+    -v want="$wantKeys" -v rc="$residCut" -v worst="$worst" -v r2below="$r2below" \
+    -v minN="$minN" -v fp="$fPipe" -v fs="$fStep" -v fr="$fRef" -v showAll="$showAll" \
+    "$JR_AWK_COLMAP"'
+    function refClass(r,   i,a,kv){
+        if(r=="none"||r=="") return (r=="")?"":"none"
+        for(i in RM) if(i==r) return RM[i]
+        return r
+    }
+    BEGIN{
+        n=split(refmap,A," "); for(i=1;i<=n;i++){ split(A[i],kv,"="); RM[kv[1]]=kv[2] }
+        nw=split(want,W," "); for(i=1;i<=nw;i++) WANT[W[i]]=1
+        p=2  # fit parameters (slope, intercept)
+    }
+    $(col["status"])=="COMPLETED" && $(col["inputSize"])+0>0 {
+        pipe=$(col["pipeline"]); step=$(col["step"]); rg=refClass($(col["ref"]))
+        key=pipe"/"step"/"rg
+        if(fp!="" && index(pipe,fp)==0) next
+        if(fs!="" && index(step,fs)==0) next
+        if(fr!="" && index(rg,fr)==0 && index($(col["ref"]),fr)==0) next
+        i=++cnt[key]
+        X[key,i]=$(col["inputSize"])+0; Y[key,i]=$(col[mcol])+0
+        JOB[key,i]=$(col["jobID"]); CORE[key,i]=$(col["cores"])
+        if(!(key in seen)){ seen[key]=1; KEYS[++nk]=key }
+        coreset[key","$(col["cores"])]=1
+    }
+    function fitgroup(key,   i,nn,sx,sy,sxx,sxy,xbar,ybar,Sxx,Syy){
+        nn=cnt[key]; sx=sy=sxx=sxy=0
+        for(i=1;i<=nn;i++){ sx+=X[key,i]; sy+=Y[key,i]; sxx+=X[key,i]*X[key,i]; sxy+=X[key,i]*Y[key,i] }
+        xbar=sx/nn; ybar=sy/nn
+        Sxx=sxx-sx*xbar
+        if(Sxx<=0){ A_=0; B_=ybar } else { A_=(sxy-sx*ybar)/Sxx; B_=ybar-A_*xbar }
+        SSE=Syy=0
+        for(i=1;i<=nn;i++){ e=Y[key,i]-(A_*X[key,i]+B_); SSE+=e*e; Syy+=(Y[key,i]-ybar)*(Y[key,i]-ybar) }
+        R2=(Syy>0)?1-SSE/Syy:1
+        S2=(nn>2)?SSE/(nn-2):0; S=(S2>0)?sqrt(S2):0
+        G_n=nn; G_xbar=xbar; G_Sxx=Sxx; G_a=A_; G_b=B_; G_r2=R2; G_s=S
+    }
+    # per-point diagnostics for the last-fitted group; fills arrays by index i
+    function diag(key,i,   h,e){
+        e=Y[key,i]-(G_a*X[key,i]+G_b)
+        h=(G_Sxx>0)?(1.0/G_n+(X[key,i]-G_xbar)*(X[key,i]-G_xbar)/G_Sxx):(1.0/G_n)
+        D_resid=e; D_lev=h
+        D_stud=(G_s>0 && h<1)? e/(G_s*sqrt(1-h)) : 0
+        D_cook=(G_s>0 && h<1)? (e*e/(2*G_s*G_s))*(h/((1-h)*(1-h))) : 0
+    }
+    function abss(v){ return v<0?-v:v }
+    END{
+        if(nk==0){ print "No COMPLETED rows match." > "/dev/stderr"; exit 0 }
+        if(mode=="triage"){
+            # build a sortable summary line per group
+            m=0
+            for(k=1;k<=nk;k++){
+                key=KEYS[k]; fitgroup(key)
+                nout=0; worstr=0; ncore=0
+                for(c in coreset){ split(c,cc,","); if(cc[1]==key) ncore++ }
+                for(i=1;i<=G_n;i++){ diag(key,i); if(abss(D_stud)>rc) nout++; if(abss(D_stud)>worstr) worstr=abss(D_stud) }
+                if(G_n<minN){ note="thin(n<"minN")"; healthy=0 }
+                else { note=(ncore>1?"mixed-cores?":"-"); healthy=(nout==0 && (r2below=="" || G_r2>=r2below+0)) }
+                if(r2below!="" && G_r2>=r2below+0 && G_n>=minN && nout==0) continue
+                if(!showAll && healthy && G_n>=minN) continue
+                m++
+                SKEY[m]=key; Sn[m]=G_n; Sr2[m]=G_r2; Sstd[m]=G_s; Sout[m]=nout; Sworst[m]=worstr; Snote[m]=note
+                Skeyrank[m]=(G_n<minN? -1 : nout)   # thin sinks to bottom via -1
+            }
+            if(m==0){ print "All groups healthy (no outliers; use --all to list them)."; exit 0 }
+            # sort worst-first: by #outliers desc, then worst|r| desc
+            for(a=1;a<=m;a++)for(b=a+1;b<=m;b++){
+                if(Skeyrank[b]>Skeyrank[a] || (Skeyrank[b]==Skeyrank[a] && Sworst[b]>Sworst[a])) {
+                    for(f in SWAP) delete SWAP[f]
+                    t=SKEY[a];SKEY[a]=SKEY[b];SKEY[b]=t; t=Sn[a];Sn[a]=Sn[b];Sn[b]=t
+                    t=Sr2[a];Sr2[a]=Sr2[b];Sr2[b]=t; t=Sstd[a];Sstd[a]=Sstd[b];Sstd[b]=t
+                    t=Sout[a];Sout[a]=Sout[b];Sout[b]=t; t=Sworst[a];Sworst[a]=Sworst[b];Sworst[b]=t
+                    t=Snote[a];Snote[a]=Snote[b];Snote[b]=t; t=Skeyrank[a];Skeyrank[a]=Skeyrank[b];Skeyrank[b]=t
+                }
+            }
+            printf "%-34s %4s %7s %9s %5s %7s  %s\n","GROUP (pipeline/step/refGroup)","n","R2","STDFIT","#out","worst|r|","note"
+            lim=(worst+0>0)?worst+0:m
+            for(a=1;a<=m && a<=lim;a++)
+                printf "%-34s %4d %7.3f %9.1f %5d %7.2f  %s\n",SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a]
+            print ""
+            print "metric="mcol"  outlier cut |studentized r|>"rc"  (for detail: fitQC pipeline/step/refGroup)"
+        } else {
+            # detail mode: for each wanted group, header + ranked candidates
+            for(k=1;k<=nk;k++){
+                key=KEYS[k]
+                if(nw>0 && !(key in WANT)) continue
+                fitgroup(key)
+                printf "== %s ==\n",key
+                printf "   fit: %s = %.4g * inputSize + %.4g     n=%d  R2=%.4f  STDFIT=%.1f\n",mcol,G_a,G_b,G_n,G_r2,G_s
+                if(G_n<minN){ printf "   too thin to fit (n=%d < %d); points:\n",G_n,minN }
+                hi=4.0/G_n
+                # rank points by |studentized residual| desc
+                for(i=1;i<=G_n;i++){ diag(key,i); DI[i]=i; DS[i]=abss(D_stud); DR[i]=D_resid; DST[i]=D_stud; DL[i]=D_lev; DC[i]=D_cook }
+                for(a=1;a<=G_n;a++)for(b=a+1;b<=G_n;b++) if(DS[DI[b]]>DS[DI[a]]){ t=DI[a];DI[a]=DI[b];DI[b]=t }
+                printf "   %-14s %12s %12s %9s %7s %7s %8s  %s\n","jobID","inputSize",mcol,"resid","stud-r","leverage","cookD","flags"
+                lim=(worst+0>0)?worst+0:10
+                shown=0; hilev=0
+                for(a=1;a<=G_n;a++){
+                    idx=DI[a]
+                    isout=(abss(DST[idx])>rc); islev=(DL[idx]>hi); isinf=(DC[idx]>hi)
+                    if(islev) hilev++
+                    if(!isout && !islev && !isinf && shown>=lim) continue
+                    if(shown>=lim && isout==0) continue
+                    fl=""; if(isout)fl=fl"O"; if(islev)fl=fl"L"; if(isinf)fl=fl"I"; if(fl=="")fl="-"
+                    printf "   %-14s %12d %12d %9.1f %7.2f %7.3f %8.3f  %s\n",JOB[key,idx],X[key,idx],Y[key,idx],DR[idx],DST[idx],DL[idx],DC[idx],fl
+                    shown++
+                }
+                clean=G_n-shown; if(clean>0) printf "   (%d clean point%s not shown)\n",clean,(clean==1?"":"s")
+                if(hilev>0) printf "   note: %d high-leverage point%s (L) -- often your most valuable extremes; never auto-remove.\n",hilev,(hilev==1?"":"s")
+                print "   flags: O=outlier(|r|>"rc")  L=high-leverage(h>4/n)  I=influential(cookD>4/n)"
+                print ""
+            }
+        }
+    }'
+
+# --- optional ASCII picture (one per requested group), kept out of the engine
+if [ "$doPlot" = 1 ] && [ ${#groups[@]} -gt 0 ]; then
+    for key in $wantKeys; do
+        p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
+        dat=$(mktemp)
+        jrEmitV2 "$store" | awk -F, -v p="$p" -v s="$s" -v rg="$rg" -v refmap="$JR_REF_CLASS" -v mcol="$metricCol" \
+            'function refClass(r,  i,kv,a,n){ if(r=="none"||r=="")return (r=="")?"":"none"; n=split(refmap,a," "); for(i=1;i<=n;i++){split(a[i],kv,"="); if(kv[1]==r)return kv[2]} return r }
+             '"$JR_AWK_COLMAP"'$(col["status"])=="COMPLETED" && $(col["pipeline"])==p && $(col["step"])==s && refClass($(col["ref"]))==rg { print $(col["inputSize"]), $(col[mcol]) }' > "$dat"
+        if [ -s "$dat" ]; then
+            echo "== $key (ASCII) =="
+            gnuplot -e "set term dumb size 78,22; set key off; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$dat' u 1:2 via a,b; plot '$dat' u 1:2 w points pt '+', f(x) w lines" 2>/dev/null
+            echo
+        fi
+        rm -f "$dat"
+    done
+fi
