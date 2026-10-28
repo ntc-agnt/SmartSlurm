@@ -27,6 +27,8 @@ $self -- jobRecord regression QC (assess fits, rank outliers)
   $self                         triage: one line per group, worst first
   $self PIPE/STEP/REF ...       detail for one or more groups
   $self --pipeline P --step S --ref R   detail by explicit fields
+  $self PIPE/STEP/REF --remove 1004,1009   drop those jobIDs, re-fit
+  $self PIPE/STEP/REF --auto    iteratively remove worst outliers, re-fit
 
 Options:
   --store FILE     read this jobRecord file (default: from config.txt)
@@ -40,7 +42,17 @@ Options:
   --ref R          restrict to ref/refGroup R (substring)
   --all            triage: also show healthy groups (hidden by default)
   --plot           detail: add a gnuplot ASCII scatter + fit line
+  --remove IDS     remove these comma-separated jobIDs from the one named group
+  --auto           iteratively remove the worst outlier (|r|>cut), re-fit, repeat;
+                   stops at --max-remove, at n<=--min-n, or when the worst point is
+                   high-leverage (never auto-removed -- use --remove for those)
+  --remove-worst   alias for --auto
+  --max-remove N   cap for --auto (default 5)
+  --dry-run        preview --remove/--auto on a scratch copy; write nothing
   -h, --help       this help
+
+Removal always backs the store up first (jobRecord.back.<ts>.txt) and is scoped to
+the named group, so a jobID colliding in another group is never touched.
 EOF
     exit "${1:-0}"
 }
@@ -53,6 +65,7 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 # --- args ------------------------------------------------------------------
 store=""; metric="mem"; worst=0; residCut=2; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
+removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0
 groups=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -67,6 +80,10 @@ while [ $# -gt 0 ]; do
         --ref)       fRef=$2; shift 2;;
         --all)       showAll=1; shift;;
         --plot)      doPlot=1; shift;;
+        --remove)    removeIDs=$2; shift 2;;
+        --auto|--remove-worst) autoRemove=1; shift;;
+        --max-remove) maxRemove=$2; shift 2;;
+        --dry-run)   dryRun=1; shift;;
         -h|--help)   usage 0;;
         --)          shift; while [ $# -gt 0 ]; do groups+=("$1"); shift; done;;
         -*)          echo "$self: unknown option: $1" >&2; usage 1;;
@@ -111,10 +128,13 @@ metricCol=memUsed; [ "$metric" = time ] && metricCol=timeUsed
 # the estimator exactly. Statistics: OLS y=a*x+b, R2, STDFIT=sqrt(SSE/(n-2)),
 # leverage h=1/n+(x-xbar)^2/Sxx, studentized residual e/(s*sqrt(1-h)),
 # Cook's D = (e^2/(p*s^2))*(h/(1-h)^2) with p=2.
-jrEmitV2 "$store" | awk -F, \
+# engine MODE WANTKEYS : MODE is triage|detail|emit; emit prints machine-readable
+# per-point diagnostics (one math implementation shared with the --remove loop).
+engine() {
+  jrEmitV2 "$store" | awk -F, \
     -v mcol="$metricCol" -v refmap="$JR_REF_CLASS" \
-    -v mode="$([ ${#groups[@]} -gt 0 ] && echo detail || echo triage)" \
-    -v want="$wantKeys" -v rc="$residCut" -v worst="$worst" -v r2below="$r2below" \
+    -v mode="$1" \
+    -v want="$2" -v rc="$residCut" -v worst="$worst" -v r2below="$r2below" \
     -v minN="$minN" -v fp="$fPipe" -v fs="$fStep" -v fr="$fRef" -v showAll="$showAll" \
     "$JR_AWK_COLMAP"'
     function refClass(r,   i,a,kv){
@@ -195,6 +215,18 @@ jrEmitV2 "$store" | awk -F, \
                 printf "%-34s %4d %7.3f %9.1f %5d %7.2f  %s\n",SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a]
             print ""
             print "metric="mcol"  outlier cut |studentized r|>"rc"  (for detail: fitQC pipeline/step/refGroup)"
+        } else if(mode=="emit"){
+            # machine-readable per-point diagnostics for the wanted group(s):
+            # key jobID x y resid studr leverage cookD n r2 stdfit (tab-separated)
+            for(k=1;k<=nk;k++){
+                key=KEYS[k]
+                if(nw>0 && !(key in WANT)) continue
+                fitgroup(key)
+                for(i=1;i<=G_n;i++){ diag(key,i)
+                    printf "%s\t%s\t%d\t%d\t%.4f\t%.4f\t%.4f\t%.4f\t%d\t%.6f\t%.4f\n",\
+                        key,JOB[key,i],X[key,i],Y[key,i],D_resid,D_stud,D_lev,D_cook,G_n,G_r2,G_s
+                }
+            }
         } else {
             # detail mode: for each wanted group, header + ranked candidates
             for(k=1;k<=nk;k++){
@@ -228,6 +260,88 @@ jrEmitV2 "$store" | awk -F, \
             }
         }
     }'
+}   # end engine()
+
+# --- mutation helpers (Phase 2) --------------------------------------------
+# Removal is backed up (reusing cleanUp's jobRecord.back.<ts>.txt naming) and
+# scoped to the named group: a jobID is dropped only from rows whose
+# (pipeline, step, refGroup) matches, so a colliding id elsewhere is never hit.
+backupPath=""
+_backup_once() {
+    [ -n "$backupPath" ] && return 0
+    local dir ts
+    dir=$(dirname "$store"); ts=$(date +%Y-%m-%d_%H-%M-%S)
+    backupPath="$dir/jobRecord.back.$ts.txt"
+    cp "$store" "$backupPath" && echo "Backed up store -> $backupPath (roll back by restoring this file)."
+}
+_prune() {   # $1=groupKey  $2=comma-separated jobIDs -> rewrite store without them
+    local key=$1 ids=$2 p rest s rg tmp
+    p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
+    tmp=$(mktemp)
+    # store is v2 (verified); rewrite the raw file name-addressed, header kept.
+    awk -F, -v OFS=, -v p="$p" -v s="$s" -v rg="$rg" -v ids="$ids" -v refmap="$JR_REF_CLASS" '
+        BEGIN{ n=split(ids,a,","); for(i=1;i<=n;i++) R[a[i]]=1
+               m=split(refmap,M," "); for(i=1;i<=m;i++){ split(M[i],kv,"="); RM[kv[1]]=kv[2] } }
+        function refClass(r,  i){ if(r=="none"||r=="")return (r=="")?"":"none"; for(i in RM) if(i==r)return RM[i]; return r }
+        NR==1{ for(i=1;i<=NF;i++) col[$i]=i; print; next }
+        { k=$(col["pipeline"])"/"$(col["step"])"/"refClass($(col["ref"]))
+          if(k==(p"/"s"/"rg) && ($(col["jobID"]) in R)) next
+          print }' "$store" > "$tmp" && mv "$tmp" "$store"
+}
+
+# --- dispatch --------------------------------------------------------------
+if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
+    # mutation needs exactly one resolved group
+    # shellcheck disable=SC2086
+    set -- $wantKeys
+    [ "$#" -eq 1 ] || { echo "$self: --remove/--auto need exactly one group as PIPE/STEP/REF (got: ${wantKeys:-none})" >&2; exit 1; }
+    grp=$1
+    if [ "$dryRun" = 1 ]; then
+        work=$(mktemp); cp "$store" "$work"; store="$work"
+        echo "(dry run: operating on a scratch copy; the real store is untouched)"
+    fi
+
+    echo "### BEFORE ###"; engine detail "$grp"
+
+    if [ -n "$removeIDs" ]; then
+        [ "$dryRun" = 1 ] || _backup_once
+        _prune "$grp" "$removeIDs"
+        echo ">>> removed [$removeIDs] from $grp"
+    fi
+
+    if [ "$autoRemove" = 1 ]; then
+        [ "$dryRun" = 1 ] || _backup_once
+        trail=""
+        for (( pass=1; pass<=maxRemove; pass++ )); do
+            pick=$(engine emit "$grp" | awk -v rc="$residCut" '
+                BEGIN{best=-1}
+                { ar=($6<0?-$6:$6); n=$9; hi=4.0/n
+                  if(ar>rc && ar>best){best=ar; jid=$2; islev=($7>hi); nn=n} }
+                END{ if(best<0) print "NONE"; else printf "%s %.2f %d %d\n",jid,best,islev,nn }')
+            # shellcheck disable=SC2086
+            set -- $pick
+            if [ "$1" = NONE ]; then echo ">>> converged: no point over |stud-r|>$residCut"; break; fi
+            jid=$1; br=$2; islev=$3; nn=$4
+            if [ "$nn" -le "$minN" ]; then echo ">>> stop: group at n=$nn (min-n=$minN); refusing to thin further"; break; fi
+            if [ "$islev" = 1 ]; then
+                echo ">>> stop: worst candidate jobID $jid (|r|=$br) is HIGH-LEVERAGE -- often a valuable extreme."
+                echo "         not auto-removing; inspect it, and if it is truly bad remove it explicitly: fitQC $grp --remove $jid"
+                break
+            fi
+            _prune "$grp" "$jid"
+            trail="$trail $jid(|r|=$br)"
+            echo "    pass $pass: removed jobID $jid (|stud-r|=$br)"
+        done
+        [ -n "$trail" ] && echo ">>> removed:$trail"
+    fi
+
+    echo "### AFTER ###"; engine detail "$grp"
+    if [ "$dryRun" = 1 ]; then rm -f "$store"; echo "(dry run: nothing was written)"; fi
+    exit 0
+fi
+
+# read-only views
+if [ ${#groups[@]} -gt 0 ]; then engine detail "$wantKeys"; else engine triage ""; fi
 
 # --- optional ASCII picture (one per requested group), kept out of the engine
 if [ "$doPlot" = 1 ] && [ ${#groups[@]} -gt 0 ]; then
