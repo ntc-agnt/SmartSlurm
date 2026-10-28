@@ -157,7 +157,6 @@ engine() {
         X[key,i]=$(col["inputSize"])+0; Y[key,i]=$(col[mcol])+0
         JOB[key,i]=$(col["jobID"]); CORE[key,i]=$(col["cores"])
         if(!(key in seen)){ seen[key]=1; KEYS[++nk]=key }
-        coreset[key","$(col["cores"])]=1
     }
     function fitgroup(key,   i,nn,sx,sy,sxx,sxy,xbar,ybar,Sxx,Syy){
         nn=cnt[key]; sx=sy=sxx=sxy=0
@@ -187,11 +186,10 @@ engine() {
             m=0
             for(k=1;k<=nk;k++){
                 key=KEYS[k]; fitgroup(key)
-                nout=0; worstr=0; ncore=0
-                for(c in coreset){ split(c,cc,","); if(cc[1]==key) ncore++ }
+                nout=0; worstr=0
                 for(i=1;i<=G_n;i++){ diag(key,i); if(abss(D_stud)>rc) nout++; if(abss(D_stud)>worstr) worstr=abss(D_stud) }
                 if(G_n<minN){ note="thin(n<"minN")"; healthy=0 }
-                else { note=(ncore>1?"mixed-cores?":"-"); healthy=(nout==0 && (r2below=="" || G_r2>=r2below+0)) }
+                else { note="-"; healthy=(nout==0 && (r2below=="" || G_r2>=r2below+0)) }
                 if(r2below!="" && G_r2>=r2below+0 && G_n>=minN && nout==0) continue
                 if(!showAll && healthy && G_n>=minN) continue
                 m++
