@@ -46,7 +46,10 @@ Options:
   --step S         restrict to step S (substring)
   --ref R          restrict to ref/refGroup R (substring)
   --all            triage: also show healthy groups (hidden by default)
-  --plot           detail: add a gnuplot ASCII scatter + fit line
+  --plot           detail: add a gnuplot scatter + fit line above the table
+  --gfx MODE       plot backend: dumb (ASCII, universal), sixel or kitty (true
+                   raster line, needs a capable terminal). Default: auto (kitty if
+                   detected, else dumb)
   --no-color       disable red highlighting of suspected outliers (auto-off when
                    output is piped/redirected)
   --remove IDS     remove these comma-separated jobIDs from the one named group
@@ -72,7 +75,7 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 # --- args ------------------------------------------------------------------
 store=""; metric="mem"; worst=0; residCut=auto; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
-removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0
+removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0; gfx=auto
 groups=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -87,6 +90,7 @@ while [ $# -gt 0 ]; do
         --ref)       fRef=$2; shift 2;;
         --all)       showAll=1; shift;;
         --plot)      doPlot=1; shift;;
+        --gfx)       gfx=$2; shift 2;;
         --no-color)  useColor=off; shift;;
         -i|--interactive) interactive=1; shift;;
         --remove)    removeIDs=$2; shift 2;;
@@ -105,6 +109,11 @@ case "$metric" in mem|time) ;; *) echo "$self: --metric must be mem or time" >&2
 # get plain text); --no-color forces off. Suspected outliers (over the cut) show red.
 [ "$useColor" = auto ] && { [ -t 1 ] && useColor=on || useColor=off; }
 if [ "$useColor" = on ]; then C_RED=$'\033[31m'; C_OFF=$'\033[0m'; else C_RED=; C_OFF=; fi
+
+# Plot backend. auto -> kitty when running inside kitty (reliably detectable),
+# else the ASCII dumb terminal (universal). sixel/kitty give a true raster line
+# but need a capable terminal, so they stay opt-in via --gfx.
+[ "$gfx" = auto ] && { [ -n "${KITTY_WINDOW_ID:-}" ] && gfx=kitty || gfx=dumb; }
 
 # --- locate the store ------------------------------------------------------
 if [ -z "$store" ]; then
@@ -411,7 +420,7 @@ fi
 # "plot on top" pane. Display-only (no labels/selection); the ranked table below
 # does the precise work. gnuplot does the drawing (never hand-rolled in awk).
 plot_group() {
-    local key=$1 clean out all term spec npts
+    local key=$1 clean out all term spec npts W H
     clean=$(mktemp); out=$(mktemp); all=$(mktemp)
     # split this group's points into clean vs over-cut (outlier), reusing the
     # engine's per-point verdict (emit field 6=stud-r, 12=cut) so the plot agrees
@@ -420,15 +429,32 @@ plot_group() {
         '{ ar=($6<0?-$6:$6); print $3,$4 > a; if(ar>$12) print $3,$4 > o; else print $3,$4 > c }'
     npts=$(wc -l < "$all")
     if [ "${npts:-0}" -lt 1 ]; then rm -f "$clean" "$out" "$all"; return; fi
-    if [ "$useColor" = on ]; then term="dumb ansi256"; else term="dumb"; fi
+    case "$gfx" in
+        sixel)  term="sixelgd size 640,420" ;;
+        kitty)  term="kittycairo size 640,420" ;;
+        *)      [ "$useColor" = on ] && term="dumb ansi256" || term="dumb" ;;
+    esac
+    # bigger canvas reads better; size the ASCII plot to the terminal (capped).
+    if [ "$gfx" = dumb ]; then
+        W=$( { tput cols 2>/dev/null || echo 80; } ); W=$((W-4)); [ "$W" -gt 100 ] && W=100; [ "$W" -lt 50 ] && W=78
+        H=$((W*7/20)); [ "$H" -gt 28 ] && H=28; [ "$H" -lt 14 ] && H=14
+        term="$term size $W,$H"
+    fi
     printf '   plot: %s vs inputSize   (%sred%s = suspected outlier)\n' "$metricCol" "$C_RED" "$C_OFF"
-    # fit line on ALL points (matches the table's fit); only include series with data.
+    # glyphs: raster terms (sixel/kitty) get real filled markers; dumb gets ASCII
+    # chars distinct from the line's own glyph (clean 'o', outlier 'O'). Fit line
+    # (yellow) on ALL points so it matches the table's fit. Only data-bearing series.
+    local cpt opt
+    case "$gfx" in
+        sixel|kitty) cpt="pt 6 ps 1.2"; opt="pt 7 ps 1.8" ;;
+        *)           cpt="pt 'o'";      opt="pt 'O'" ;;
+    esac
     spec=""
-    [ "$npts" -ge 2 ] && spec="f(x) w lines lc rgb 'yellow'"
-    [ -s "$clean" ] && spec="${spec:+$spec, }'$clean' u 1:2 w points lc rgb 'cyan' pt '+'"
-    [ -s "$out" ]   && spec="${spec:+$spec, }'$out' u 1:2 w points lc rgb 'red' pt 'O'"
+    [ "$npts" -ge 2 ] && spec="f(x) w lines lw 2 lc rgb 'yellow'"
+    [ -s "$clean" ] && spec="${spec:+$spec, }'$clean' u 1:2 w points $cpt lc rgb 'cyan'"
+    [ -s "$out" ]   && spec="${spec:+$spec, }'$out' u 1:2 w points $opt lc rgb 'red'"
     # small margins so points at the data extremes sit inside the frame, not on it.
-    gnuplot -e "set term $term size 74,16; set key off; set offsets graph 0.02,0.02,0.06,0.06; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
+    gnuplot -e "set term $term; set key off; set offsets graph 0.02,0.02,0.08,0.08; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
     rm -f "$clean" "$out" "$all"
 }
 
