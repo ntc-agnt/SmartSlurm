@@ -397,22 +397,30 @@ if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
     exit 0
 fi
 
-# read-only views
-if [ ${#groups[@]} -gt 0 ]; then engine detail "$wantKeys"; else engine triage ""; fi
+# plot_group KEY : a compact gnuplot ASCII scatter + fit line for one group -- the
+# "plot on top" pane. Display-only (no labels/selection); the ranked table below
+# does the precise work. gnuplot does the drawing (never hand-rolled in awk).
+plot_group() {
+    local key=$1 p rest s rg dat
+    p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
+    dat=$(mktemp)
+    jrEmitV2 "$store" | awk -F, -v p="$p" -v s="$s" -v rg="$rg" -v refmap="$JR_REF_CLASS" -v mcol="$metricCol" \
+        'function refClass(r,  i,kv,a,n){ if(r=="none"||r=="")return (r=="")?"":"none"; n=split(refmap,a," "); for(i=1;i<=n;i++){split(a[i],kv,"="); if(kv[1]==r)return kv[2]} return r }
+         '"$JR_AWK_COLMAP"'$(col["status"])=="COMPLETED" && $(col["pipeline"])==p && $(col["step"])==s && refClass($(col["ref"]))==rg { print $(col["inputSize"]), $(col[mcol]) }' > "$dat"
+    if [ -s "$dat" ]; then
+        echo "   plot: $metricCol vs inputSize"
+        gnuplot -e "set term dumb size 74,15; set key off; set tmargin 0; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$dat' u 1:2 via a,b; plot '$dat' u 1:2 w points pt '+', f(x) w lines" 2>/dev/null
+    fi
+    rm -f "$dat"
+}
 
-# --- optional ASCII picture (one per requested group), kept out of the engine
-if [ "$doPlot" = 1 ] && [ ${#groups[@]} -gt 0 ]; then
-    for key in $wantKeys; do
-        p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
-        dat=$(mktemp)
-        jrEmitV2 "$store" | awk -F, -v p="$p" -v s="$s" -v rg="$rg" -v refmap="$JR_REF_CLASS" -v mcol="$metricCol" \
-            'function refClass(r,  i,kv,a,n){ if(r=="none"||r=="")return (r=="")?"":"none"; n=split(refmap,a," "); for(i=1;i<=n;i++){split(a[i],kv,"="); if(kv[1]==r)return kv[2]} return r }
-             '"$JR_AWK_COLMAP"'$(col["status"])=="COMPLETED" && $(col["pipeline"])==p && $(col["step"])==s && refClass($(col["ref"]))==rg { print $(col["inputSize"]), $(col[mcol]) }' > "$dat"
-        if [ -s "$dat" ]; then
-            echo "== $key (ASCII) =="
-            gnuplot -e "set term dumb size 78,22; set key off; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$dat' u 1:2 via a,b; plot '$dat' u 1:2 w points pt '+', f(x) w lines" 2>/dev/null
-            echo
-        fi
-        rm -f "$dat"
-    done
+# read-only views: triage, or detail (per group; with --plot the plot sits on top)
+if [ ${#groups[@]} -gt 0 ]; then
+    if [ "$doPlot" = 1 ]; then
+        for key in $wantKeys; do plot_group "$key"; engine detail "$key"; done
+    else
+        engine detail "$wantKeys"
+    fi
+else
+    engine triage ""
 fi
