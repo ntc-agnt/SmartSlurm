@@ -427,7 +427,8 @@ plot_group() {
     [ "$npts" -ge 2 ] && spec="f(x) w lines lc rgb 'yellow'"
     [ -s "$clean" ] && spec="${spec:+$spec, }'$clean' u 1:2 w points lc rgb 'cyan' pt '+'"
     [ -s "$out" ]   && spec="${spec:+$spec, }'$out' u 1:2 w points lc rgb 'red' pt 'O'"
-    gnuplot -e "set term $term size 74,16; set key off; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
+    # small margins so points at the data extremes sit inside the frame, not on it.
+    gnuplot -e "set term $term size 74,16; set key off; set offsets graph 0.02,0.02,0.06,0.06; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
     rm -f "$clean" "$out" "$all"
 }
 
@@ -477,7 +478,15 @@ fitq_interactive() {
         fi
         _clear
         printf 'fitQC  —  %s\n\n' "$store"
-        printf '%s\n' "$triage" | awk '$1 ~ /\//{printf " %2d) %s\n",++i,$0; next}{print "     "$0}'
+        # number the group rows and give the index its own "#" header, aligned to
+        # the "%3d) " row prefix (both 5 cols) so every column lines up. The footer
+        # legend is moved below the list; the all-healthy message still prints.
+        printf '%s\n' "$triage" | awk '
+            /^GROUP/   { printf "  #  %s\n", $0; next }
+            $1 ~ /\//  { printf "%3d) %s\n", ++i, $0; next }
+            /^metric=/ { foot=$0; next }
+            NF         { print }
+            END        { if(foot!="") printf "\n     %s\n", foot }'
         echo
         echo "<#> inspect group   ·   a = all/actionable   ·   r = refresh   ·   q = quit"
         read -rp "> " tok </dev/tty || break
