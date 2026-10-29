@@ -24,6 +24,8 @@ usage() {
     cat >&2 <<EOF
 $self -- jobRecord regression QC (assess fits, rank outliers)
 
+  $self -i                      interactive browser (checkRun-style: pick a group,
+                                inspect, plot, remove; q/qq to go up/quit)
   $self                         triage: one line per group, worst first
   $self PIPE/STEP/REF ...       detail for one or more groups
   $self --pipeline P --step S --ref R   detail by explicit fields
@@ -70,7 +72,7 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 # --- args ------------------------------------------------------------------
 store=""; metric="mem"; worst=0; residCut=auto; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
-removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto
+removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0
 groups=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -86,6 +88,7 @@ while [ $# -gt 0 ]; do
         --all)       showAll=1; shift;;
         --plot)      doPlot=1; shift;;
         --no-color)  useColor=off; shift;;
+        -i|--interactive) interactive=1; shift;;
         --remove)    removeIDs=$2; shift 2;;
         --auto|--remove-worst) autoRemove=1; shift;;
         --max-remove) maxRemove=$2; shift 2;;
@@ -344,6 +347,36 @@ _prune() {   # $1=groupKey  $2=comma-separated jobIDs -> rewrite store without t
           print }' "$store" > "$tmp" && mv "$tmp" "$store"
 }
 
+# _auto_remove GROUP : iteratively prune the worst over-cut outlier, re-fit, repeat.
+# Stops at --max-remove, at n<=min-n, or when the worst point is high-leverage
+# (never auto-removed). Caller takes the backup first. Prints the removal trail.
+_auto_remove() {
+    local grp=$1 pass pick jid br islev nn trail=""
+    for (( pass=1; pass<=maxRemove; pass++ )); do
+        # per-group cut is emit field 12 (df-calibrated when auto) -> same threshold
+        # as triage/detail, no recompute.
+        pick=$(engine emit "$grp" | awk '
+            BEGIN{best=-1}
+            { ar=($6<0?-$6:$6); n=$9; hi=4.0/n; cut=$12
+              if(ar>cut && ar>best){best=ar; jid=$2; islev=($7>hi); nn=n} }
+            END{ if(best<0) print "NONE"; else printf "%s %.2f %d %d\n",jid,best,islev,nn }')
+        # shellcheck disable=SC2086
+        set -- $pick
+        if [ "$1" = NONE ]; then echo ">>> converged: no point over the outlier cut"; break; fi
+        jid=$1; br=$2; islev=$3; nn=$4
+        if [ "$nn" -le "$minN" ]; then echo ">>> stop: group at n=$nn (min-n=$minN); refusing to thin further"; break; fi
+        if [ "$islev" = 1 ]; then
+            echo ">>> stop: worst candidate jobID $jid (|r|=$br) is HIGH-LEVERAGE -- often a valuable extreme."
+            echo "         not auto-removing; inspect it, and if it is truly bad remove it explicitly: fitQC $grp --remove $jid"
+            break
+        fi
+        _prune "$grp" "$jid"
+        trail="$trail $jid(|r|=$br)"
+        echo "    pass $pass: removed jobID $jid (|stud-r|=$br)"
+    done
+    [ -n "$trail" ] && echo ">>> removed:$trail"
+}
+
 # --- dispatch --------------------------------------------------------------
 if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
     # mutation needs exactly one resolved group
@@ -366,30 +399,7 @@ if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
 
     if [ "$autoRemove" = 1 ]; then
         [ "$dryRun" = 1 ] || _backup_once
-        trail=""
-        for (( pass=1; pass<=maxRemove; pass++ )); do
-            # the per-group cut is emit field 12 (df-calibrated when auto), so the
-            # loop uses the same threshold as triage/detail without recomputing it.
-            pick=$(engine emit "$grp" | awk '
-                BEGIN{best=-1}
-                { ar=($6<0?-$6:$6); n=$9; hi=4.0/n; cut=$12
-                  if(ar>cut && ar>best){best=ar; jid=$2; islev=($7>hi); nn=n} }
-                END{ if(best<0) print "NONE"; else printf "%s %.2f %d %d\n",jid,best,islev,nn }')
-            # shellcheck disable=SC2086
-            set -- $pick
-            if [ "$1" = NONE ]; then echo ">>> converged: no point over the outlier cut"; break; fi
-            jid=$1; br=$2; islev=$3; nn=$4
-            if [ "$nn" -le "$minN" ]; then echo ">>> stop: group at n=$nn (min-n=$minN); refusing to thin further"; break; fi
-            if [ "$islev" = 1 ]; then
-                echo ">>> stop: worst candidate jobID $jid (|r|=$br) is HIGH-LEVERAGE -- often a valuable extreme."
-                echo "         not auto-removing; inspect it, and if it is truly bad remove it explicitly: fitQC $grp --remove $jid"
-                break
-            fi
-            _prune "$grp" "$jid"
-            trail="$trail $jid(|r|=$br)"
-            echo "    pass $pass: removed jobID $jid (|stud-r|=$br)"
-        done
-        [ -n "$trail" ] && echo ">>> removed:$trail"
+        _auto_remove "$grp"
     fi
 
     echo "### AFTER ###"; engine detail "$grp"
@@ -401,18 +411,94 @@ fi
 # "plot on top" pane. Display-only (no labels/selection); the ranked table below
 # does the precise work. gnuplot does the drawing (never hand-rolled in awk).
 plot_group() {
-    local key=$1 p rest s rg dat
-    p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
-    dat=$(mktemp)
-    jrEmitV2 "$store" | awk -F, -v p="$p" -v s="$s" -v rg="$rg" -v refmap="$JR_REF_CLASS" -v mcol="$metricCol" \
-        'function refClass(r,  i,kv,a,n){ if(r=="none"||r=="")return (r=="")?"":"none"; n=split(refmap,a," "); for(i=1;i<=n;i++){split(a[i],kv,"="); if(kv[1]==r)return kv[2]} return r }
-         '"$JR_AWK_COLMAP"'$(col["status"])=="COMPLETED" && $(col["pipeline"])==p && $(col["step"])==s && refClass($(col["ref"]))==rg { print $(col["inputSize"]), $(col[mcol]) }' > "$dat"
-    if [ -s "$dat" ]; then
-        echo "   plot: $metricCol vs inputSize"
-        gnuplot -e "set term dumb size 74,15; set key off; set tmargin 0; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$dat' u 1:2 via a,b; plot '$dat' u 1:2 w points pt '+', f(x) w lines" 2>/dev/null
-    fi
-    rm -f "$dat"
+    local key=$1 clean out all term spec npts
+    clean=$(mktemp); out=$(mktemp); all=$(mktemp)
+    # split this group's points into clean vs over-cut (outlier), reusing the
+    # engine's per-point verdict (emit field 6=stud-r, 12=cut) so the plot agrees
+    # with the table. Columns emitted: inputSize mem.
+    engine emit "$key" | awk -v c="$clean" -v o="$out" -v a="$all" \
+        '{ ar=($6<0?-$6:$6); print $3,$4 > a; if(ar>$12) print $3,$4 > o; else print $3,$4 > c }'
+    npts=$(wc -l < "$all")
+    if [ "${npts:-0}" -lt 1 ]; then rm -f "$clean" "$out" "$all"; return; fi
+    if [ "$useColor" = on ]; then term="dumb ansi256"; else term="dumb"; fi
+    printf '   plot: %s vs inputSize   (%sred%s = suspected outlier)\n' "$metricCol" "$C_RED" "$C_OFF"
+    # fit line on ALL points (matches the table's fit); only include series with data.
+    spec=""
+    [ "$npts" -ge 2 ] && spec="f(x) w lines lc rgb 'yellow'"
+    [ -s "$clean" ] && spec="${spec:+$spec, }'$clean' u 1:2 w points lc rgb 'cyan' pt '+'"
+    [ -s "$out" ]   && spec="${spec:+$spec, }'$out' u 1:2 w points lc rgb 'red' pt 'O'"
+    gnuplot -e "set term $term size 74,16; set key off; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
+    rm -f "$clean" "$out" "$all"
 }
+
+# --- interactive browser (checkRun-style; prompt-driven, up/down levels) -------
+_clear() { clear 2>/dev/null || printf '\033[H\033[2J'; }
+_pause() { printf '   %b[Enter] back%b ' "$C_RED" "$C_OFF"; read -r _ </dev/tty; }
+QUIT=0
+
+# fitq_group GROUP : level-2 inspect view. Returns 0 if the store was mutated
+# (so the group list refreshes its counts), else 1. Redraws only on entry and
+# after a change -- the plot submenu and bad input reuse the cached detail.
+fitq_group() {
+    local grp=$1 detail tok mutated=0 redraw=1
+    while [ "$QUIT" = 0 ]; do
+        [ "$redraw" = 1 ] && { detail=$(engine detail "$grp"); redraw=0; }
+        _clear
+        printf '%s\n\n' "$detail"
+        echo "p = plot   ·   r <ids> = remove   ·   A = auto-remove   ·   b = back   ·   q/qq = quit"
+        read -rp "> " tok </dev/tty || break
+        # shellcheck disable=SC2086
+        set -- $tok
+        case "${1:-}" in
+            ''|b) break;;
+            q)    break;;
+            qq)   QUIT=1; break;;
+            p)    _clear; plot_group "$grp"; _pause;;                     # plot submenu -> back up
+            r)    shift; if [ -n "$*" ]; then _backup_once; _prune "$grp" "$(echo "$* "|tr ' ' ',')"; mutated=1; redraw=1; fi;;
+            A)    _backup_once; _auto_remove "$grp"; _pause; mutated=1; redraw=1;;
+            *)    ;;                                                       # ignore junk (no recompute)
+        esac
+    done
+    [ "$mutated" = 1 ]
+}
+
+# fitq_interactive : level-1 group list. Caches the triage + key list; recomputes
+# only on entry, refresh, all/actionable toggle, or after a mutation.
+fitq_interactive() {
+    local tok triage dirty=1
+    local -a keys
+    while [ "$QUIT" = 0 ]; do
+        if [ "$dirty" = 1 ]; then
+            triage=$(engine triage "")
+            # strip ANSI before parsing keys: a red (outlier) row would otherwise
+            # carry an escape prefix on $1 and never match on the detail lookup.
+            mapfile -t keys < <(printf '%s\n' "$triage" | sed 's/\x1b\[[0-9;]*m//g' | awk '$1 ~ /\//{print $1}')
+            dirty=0
+        fi
+        _clear
+        printf 'fitQC  —  %s\n\n' "$store"
+        printf '%s\n' "$triage" | awk '$1 ~ /\//{printf " %2d) %s\n",++i,$0; next}{print "     "$0}'
+        echo
+        echo "<#> inspect group   ·   a = all/actionable   ·   r = refresh   ·   q = quit"
+        read -rp "> " tok </dev/tty || break
+        case "$tok" in
+            q|qq) break;;
+            ''|r) dirty=1;;
+            a)    showAll=$([ "$showAll" = 1 ] && echo 0 || echo 1); dirty=1;;
+            *[!0-9]*) ;;
+            *)    if [ "$tok" -ge 1 ] 2>/dev/null && [ "$tok" -le "${#keys[@]}" ]; then
+                      fitq_group "${keys[$((tok-1))]}" && dirty=1
+                  fi;;
+        esac
+    done
+    _clear
+}
+
+if [ "$interactive" = 1 ]; then
+    [ -e /dev/tty ] || { echo "$self: --interactive needs a terminal" >&2; exit 1; }
+    fitq_interactive
+    exit 0
+fi
 
 # read-only views: triage, or detail (per group; with --plot the plot sits on top)
 if [ ${#groups[@]} -gt 0 ]; then
