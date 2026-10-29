@@ -455,10 +455,33 @@ plot_group() {
         kitty)  term="kittycairo size 640,420" ;;
         *)      [ "$useColor" = on ] && term="dumb ansi256" || term="dumb" ;;
     esac
-    # bigger canvas reads better; size the ASCII plot to the terminal (capped).
+    # default framing (raster terms + fallback): let gnuplot autorange with margins.
+    local yopts="" plotoff="set offsets graph 0.02,0.02,0.08,0.08"
     if [ "$gfx" = dumb ]; then
         W=$( { tput cols 2>/dev/null || echo 80; } ); W=$((W-4)); [ "$W" -gt 100 ] && W=100; [ "$W" -lt 50 ] && W=78
-        H=$((W*7/20)); [ "$H" -gt 28 ] && H=28; [ "$H" -lt 14 ] && H=14
+        # Pin even y-ticks: pick a round interval (~5 across the data), round the
+        # range out to it, and set the plot height to a multiple of the interval
+        # count so every tick spans the same number of rows (no uneven gaps, which
+        # the dumb terminal otherwise produces when rows don't divide by the ticks).
+        local ylo yhi ystep nI rowsPer
+        read -r ylo yhi ystep nI < <(awk '{y=$2+0; if(NR==1||y<mn)mn=y; if(NR==1||y>mx)mx=y}
+            END{ r=mx-mn
+                 if(r<=0){ print mn-1, mx+1, 0, 0; exit }
+                 raw=r/5; m=exp(log(10)*int(log(raw)/log(10))); if(m<=0)m=1
+                 n=raw/m; s=(n<1.5?1:(n<3?2:(n<7?5:10)))*m
+                 # work in integer tick indices to avoid float drift on the bounds
+                 nlo=int(mn/s); if(nlo*s>mn)nlo--
+                 nhi=int(mx/s); if(nhi*s<mx)nhi++
+                 nhi++                                    # one interval of headroom
+                 print nlo*s, nhi*s, s, nhi-nlo }' "$all")
+        if [ "${nI:-0}" -ge 2 ]; then
+            rowsPer=3; [ $((nI*rowsPer+4)) -gt 30 ] && rowsPer=2; [ $((nI*rowsPer+4)) -gt 30 ] && rowsPer=1
+            H=$((nI*rowsPer+4))
+            yopts="set yrange [$ylo:$yhi]; set ytics $ystep;"
+            plotoff="set offsets graph 0.03,0.03,0,0"   # yrange already gives headroom
+        else
+            H=$((W*7/20)); [ "$H" -gt 28 ] && H=28; [ "$H" -lt 14 ] && H=14
+        fi
         term="$term size $W,$H"
     fi
     printf '   plot: %s vs inputSize   (%sred%s = suspected outlier)\n' "$metricCol" "$C_RED" "$C_OFF"
@@ -474,8 +497,7 @@ plot_group() {
     [ "$npts" -ge 2 ] && spec="f(x) w lines lw 2 lc rgb 'yellow'"
     [ -s "$clean" ] && spec="${spec:+$spec, }'$clean' u 1:2 w points $cpt lc rgb 'cyan'"
     [ -s "$out" ]   && spec="${spec:+$spec, }'$out' u 1:2 w points $opt lc rgb 'red'"
-    # small margins so points at the data extremes sit inside the frame, not on it.
-    gnuplot -e "set term $term; set key off; set offsets graph 0.02,0.02,0.08,0.08; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
+    gnuplot -e "set term $term; set key off; $yopts $plotoff; set fit logfile '/dev/null'; set fit quiet; f(x)=a*x+b; fit f(x) '$all' u 1:2 via a,b; plot $spec" 2>/dev/null
     rm -f "$clean" "$out" "$all"
 }
 
