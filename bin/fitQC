@@ -110,10 +110,31 @@ case "$metric" in mem|time) ;; *) echo "$self: --metric must be mem or time" >&2
 [ "$useColor" = auto ] && { [ -t 1 ] && useColor=on || useColor=off; }
 if [ "$useColor" = on ]; then C_RED=$'\033[31m'; C_OFF=$'\033[0m'; else C_RED=; C_OFF=; fi
 
-# Plot backend. auto -> kitty when running inside kitty (reliably detectable),
-# else the ASCII dumb terminal (universal). sixel/kitty give a true raster line
-# but need a capable terminal, so they stay opt-in via --gfx.
-[ "$gfx" = auto ] && { [ -n "${KITTY_WINDOW_ID:-}" ] && gfx=kitty || gfx=dumb; }
+# detect_sixel: ask the terminal for its Primary Device Attributes and look for
+# capability 4 (sixel) in the reply. Safe: only on a real TTY, with a short read
+# timeout so a terminal that stays silent (or tmux/screen swallowing the query)
+# just falls through. Consumes the whole reply (up to the 'c' terminator) so no
+# stray bytes leak into later prompts.
+detect_sixel() {
+    [ -t 1 ] && [ -e /dev/tty ] || return 1
+    local reply f oldifs
+    printf '\033[c' > /dev/tty
+    # shellcheck disable=SC2034  # 'c' is the -d delimiter (DA reply ends in 'c'), not a var
+    IFS= read -rs -t 1 -d c reply < /dev/tty 2>/dev/null || return 1
+    reply=${reply#*\?}
+    oldifs=$IFS; IFS=';'
+    for f in $reply; do [ "$f" = 4 ] && { IFS=$oldifs; return 0; }; done
+    IFS=$oldifs; return 1
+}
+
+# Plot backend. auto -> kitty when running inside kitty (env is reliable), else
+# sixel when the terminal advertises it (probe), else the ASCII dumb terminal
+# (universal). --gfx forces a specific backend and skips the probe.
+if [ "$gfx" = auto ]; then
+    if [ -n "${KITTY_WINDOW_ID:-}" ]; then gfx=kitty
+    elif detect_sixel;              then gfx=sixel
+    else                                 gfx=dumb; fi
+fi
 
 # --- locate the store ------------------------------------------------------
 if [ -z "$store" ]; then
