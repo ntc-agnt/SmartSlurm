@@ -43,6 +43,8 @@ Options:
   --ref R          restrict to ref/refGroup R (substring)
   --all            triage: also show healthy groups (hidden by default)
   --plot           detail: add a gnuplot ASCII scatter + fit line
+  --no-color       disable red highlighting of suspected outliers (auto-off when
+                   output is piped/redirected)
   --remove IDS     remove these comma-separated jobIDs from the one named group
   --auto           iteratively remove the worst outlier (|r|>cut), re-fit, repeat;
                    stops at --max-remove, at n<=--min-n, or when the worst point is
@@ -66,7 +68,7 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 # --- args ------------------------------------------------------------------
 store=""; metric="mem"; worst=0; residCut=2; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
-removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0
+removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto
 groups=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -81,6 +83,7 @@ while [ $# -gt 0 ]; do
         --ref)       fRef=$2; shift 2;;
         --all)       showAll=1; shift;;
         --plot)      doPlot=1; shift;;
+        --no-color)  useColor=off; shift;;
         --remove)    removeIDs=$2; shift 2;;
         --auto|--remove-worst) autoRemove=1; shift;;
         --max-remove) maxRemove=$2; shift 2;;
@@ -92,6 +95,11 @@ while [ $# -gt 0 ]; do
     esac
 done
 case "$metric" in mem|time) ;; *) echo "$self: --metric must be mem or time" >&2; exit 1;; esac
+
+# Color: auto = on only when stdout is a terminal (so pipes/redirects/the harness
+# get plain text); --no-color forces off. Suspected outliers (over the cut) show red.
+[ "$useColor" = auto ] && { [ -t 1 ] && useColor=on || useColor=off; }
+if [ "$useColor" = on ]; then C_RED=$'\033[31m'; C_OFF=$'\033[0m'; else C_RED=; C_OFF=; fi
 
 # --- locate the store ------------------------------------------------------
 if [ -z "$store" ]; then
@@ -137,6 +145,7 @@ engine() {
     -v mode="$1" \
     -v want="$2" -v rc="$residCut" -v worst="$worst" -v r2below="$r2below" \
     -v minN="$minN" -v fp="$fPipe" -v fs="$fStep" -v fr="$fRef" -v showAll="$showAll" \
+    -v red="$C_RED" -v off="$C_OFF" \
     "$JR_AWK_COLMAP"'
     function refClass(r,   i,a,kv){
         if(r=="none"||r=="") return (r=="")?"":"none"
@@ -236,7 +245,7 @@ engine() {
             printf "%-34s %4s %7s %9s %5s %7s  %s\n","GROUP (pipeline/step/refGroup)","n","R2","STDFIT","#out","worst|r|","note"
             lim=(worst+0>0)?worst+0:m
             for(a=1;a<=m && a<=lim;a++)
-                printf "%-34s %4d %7.3f %9.1f %5d %7.2f  %s\n",SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a]
+                printf "%s%-34s %4d %7.3f %9.1f %5d %7.2f  %s%s\n",(Sout[a]>0?red:""),SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a],(Sout[a]>0?off:"")
             print ""
             print "metric="mcol"  outlier cut |studentized r|>"rc"  low-R2 floor "(r2below!=""?r2below+0:0.80)"  (for detail: fitQC pipeline/step/refGroup)"
         } else if(mode=="emit"){
@@ -275,7 +284,7 @@ engine() {
                     if(!isout && !islev && !isinf && shown>=lim) continue
                     if(shown>=lim && isout==0) continue
                     fl=""; if(isout)fl=fl"O"; if(islev)fl=fl"L"; if(isinf)fl=fl"I"; if(fl=="")fl="-"
-                    printf "   %-14s %12d %12d %9.1f %7.2f %7.3f %8.3f  %s\n",JOB[key,idx],X[key,idx],Y[key,idx],DR[idx],DST[idx],DL[idx],DC[idx],fl
+                    printf "%s   %-14s %12d %12d %9.1f %7.2f %7.3f %8.3f  %s%s\n",(isout?red:""),JOB[key,idx],X[key,idx],Y[key,idx],DR[idx],DST[idx],DL[idx],DC[idx],fl,(isout?off:"")
                     shown++
                 }
                 clean=G_n-shown; if(clean>0) printf "   (%d clean point%s not shown)\n",clean,(clean==1?"":"s")
