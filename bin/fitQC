@@ -35,7 +35,8 @@ Options:
   --metric mem|time   which fit to inspect (default: mem)
   --worst N        limit rows: top-N groups (triage) / top-N points (detail)
   --resid-cut X    |studentized residual| above which a point is an outlier (default 2)
-  --r2-below X     triage: only groups with R2 < X
+  --r2-below X     triage: R2 floor for the low-R2 flag (default 0.80); groups
+                   fitting worse than X are surfaced even with no outlier
   --min-n N        ignore groups with fewer than N points (default 3; the fit floor)
   --pipeline P     triage/detail: restrict to pipeline P (substring)
   --step S         restrict to step S (substring)
@@ -203,18 +204,25 @@ engine() {
                 nout=0; worstr=0
                 for(i=1;i<=G_n;i++){ diag(key,i); if(abss(D_stud)>rc) nout++; if(abss(D_stud)>worstr) worstr=abss(D_stud) }
                 merged=(snc[key]>=2)
+                # Poor-fit surfacing: a fittable group whose R2 is below the floor is
+                # shown by default even if no point crosses the residual cut -- masking
+                # can park a lone gross outlier right at the cut (see --auto), so the
+                # fit quality, not just the cut, decides visibility. Floor defaults to
+                # 0.80; --r2-below overrides it.
+                floor=(r2below!=""? r2below+0 : 0.80)
+                lowr2=(G_n>=minN && G_r2 < floor)
                 note=""
                 if(G_n<minN) note="thin(n<"minN")"
+                if(lowr2) note=(note==""?"":note" ")"low-R2"
                 if(merged) note=(note==""?"":note" ")"steps:"sortednums(snlist[key])
                 if(note=="") note="-"
-                healthy=(nout==0 && !merged && (r2below=="" || G_r2>=r2below+0))
-                if(r2below!="" && G_r2>=r2below+0 && G_n>=minN && nout==0 && !merged) continue
-                if(!showAll && healthy && G_n>=minN) continue
+                show=(nout>0 || merged || lowr2 || G_n<minN)
+                if(!showAll && !show) continue
                 m++
                 SKEY[m]=key; Sn[m]=G_n; Sr2[m]=G_r2; Sstd[m]=G_s; Sout[m]=nout; Sworst[m]=worstr; Snote[m]=note
                 Skeyrank[m]=(G_n<minN? -1 : nout)   # thin sinks to bottom via -1
             }
-            if(m==0){ print "All groups healthy (no outliers; use --all to list them)."; exit 0 }
+            if(m==0){ print "All groups look healthy (no outliers, low-R2 fits, merged steps, or thin groups; use --all to list them)."; exit 0 }
             # sort worst-first: by #outliers desc, then worst|r| desc
             for(a=1;a<=m;a++)for(b=a+1;b<=m;b++){
                 if(Skeyrank[b]>Skeyrank[a] || (Skeyrank[b]==Skeyrank[a] && Sworst[b]>Sworst[a])) {
@@ -230,7 +238,7 @@ engine() {
             for(a=1;a<=m && a<=lim;a++)
                 printf "%-34s %4d %7.3f %9.1f %5d %7.2f  %s\n",SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a]
             print ""
-            print "metric="mcol"  outlier cut |studentized r|>"rc"  (for detail: fitQC pipeline/step/refGroup)"
+            print "metric="mcol"  outlier cut |studentized r|>"rc"  low-R2 floor "(r2below!=""?r2below+0:0.80)"  (for detail: fitQC pipeline/step/refGroup)"
         } else if(mode=="emit"){
             # machine-readable per-point diagnostics for the wanted group(s):
             # key jobID x y resid studr leverage cookD n r2 stdfit (tab-separated)
