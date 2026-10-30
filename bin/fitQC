@@ -14,8 +14,9 @@
 #   fitQC P/S/R [P/S/R..] L2 detail: fit header + ranked outlier candidates.
 # Group keys are pipeline/step/refGroup (slash-joined; copy them from L1).
 #
-# This supersedes the off-cluster bin/reviewJobRecords.py (no Python, runs on
-# the cluster). Read-only in this version; --remove lands next.
+# A pure bash+awk companion to the off-cluster bin/reviewJobRecords.py: fitQC runs
+# on the cluster with no Python. The two run in PARALLEL -- fitQC does not replace
+# reviewJobRecords.py, which stays the off-cluster home for heavier analysis.
 # ---------------------------------------------------------------------------
 set -u
 
