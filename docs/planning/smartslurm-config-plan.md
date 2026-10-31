@@ -8,6 +8,14 @@
 > dependency status** at the bottom. Shared here so the instance planning the
 > resubmission organization has this context. This doc is a planning artifact on a
 > scratch branch — not intended to merge as-is.
+>
+> **Update (2026-10-31):** implementation plan reviewed against the live v2 branch
+> (`fix/jobrecords-v2-migration`). Findings folded in below (corrected sourcing-site
+> list; a JR_REF_CLASS load-order issue not previously noted). **Locked decisions:**
+> build this ONLY after PR 1 (v2) **and** PR B (slurmless subdir) land on
+> `ld32:master`; put the shared loader `ssLoadConfig()` in the existing
+> `bin/utils.sh`. Still **no code written.** Two sub-decisions remain open — see
+> **Implementation decisions** below.
 
 ## Context
 
@@ -41,12 +49,22 @@ automatically; no manual file editing and no migration step on every update.
 ### 1. Overlay config model (resolves Q1 clobber + Q2 migration)
 - Append to the **end of repo `config/config.txt`**: source a user override last so
   it wins — `[ -f "$HOME/.smartSlurm/config/user.conf" ] && . "$HOME/.smartSlurm/config/user.conf"`.
-- Change the **8 sourcing sites** (`bin/`: `ssbatch`, `ssbatchSimple`,
-  `runAsPipeline`, `checkRun`, `cancelAllJobs`, `calculateMemTime.sh`,
-  `runSimpleTest.sh`, + the Python `reviewJobRecords.py`) from the exclusive
-  if/else to **always source the repo `config/config.txt`** (which now self-overlays
-  `user.conf`). Prefer a tiny shared loader to avoid drift: add `ssLoadConfig()` to
-  `bin/utils.sh` (or a new `bin/loadConfig.sh`) and call it at each site.
+- Change the **sourcing sites** from the exclusive if/else to **always source the
+  repo `config/config.txt`** (which now self-overlays `user.conf`), via a tiny
+  shared loader `ssLoadConfig()` added to **`bin/utils.sh`** (locked 2026-10-31).
+  **VERIFIED SITE LIST (corrected — the earlier "8" list was wrong):**
+  7 bash sites use the exclusive if/else: `ssbatch`, `ssbatchSimple`,
+  `runAsPipeline`, `checkRun`, `cancelAllJobs`, `runSimpleTest.sh`, and
+  `estimateResource.sh` — plus the Python `reviewJobRecords.py`.
+  - `estimateResource.sh` (line ~231) was MISSED by the earlier list: it sources
+    config CONDITIONALLY (only if `nextMemAfterFail` is undefined) and preserves
+    `smartSlurmJobRecordDir` across the source — keep that lazy guard + preservation
+    when converting.
+  - `calculateMemTime.sh` is **NOT** a sourcing site (earlier list wrongly included
+    it): its only `config.txt` lines are COMMENTS; it reads config from the caller's
+    environment. Do not add the loader there.
+  - At code time, re-grep for the if/else pattern to confirm no site is missed, and
+    add a drift-guard-style check (a missed site silently drops user overrides).
   - `reviewJobRecords.py` reads config in Python (`home_config`/`local_config`): make
     it read **effective** values by sourcing the repo config in a subshell
     (`bash -c 'set -a; . config.txt; …'`) rather than picking one file.
@@ -54,6 +72,25 @@ automatically; no manual file editing and no migration step on every update.
   clobber, **Q1**), holds only changed keys, and new repo defaults load
   automatically since the repo file is always sourced first (**Q2** — no migration
   needed going forward).
+
+### 1b. Load-order constraint for `JR_REF_CLASS` (critical — found 2026-10-31)
+`JR_REF_CLASS` is defaulted in `bin/jobRecordSchema.sh` (~line 394) as
+`JR_REF_CLASS="${JR_REF_CLASS-<default>}"` (respects a pre-set value). Tools source
+`config.txt` and `jobRecordSchema.sh` **separately, in different orders**:
+- `ssbatch` / `ssbatchSimple`: config BEFORE schema → a `user.conf` override wins. ✅
+- `estimateResource.sh`: schema (line 11) BEFORE its lazy config source (231) → a
+  `user.conf` override would **NOT** win. ❌
+- `calculateMemTime.sh` / `cleanUp.sh`: source schema, never source config → rely on
+  the caller's env.
+
+So for the `refgroup` editor's override to win everywhere, `ssLoadConfig()` (hence
+`user.conf`) must run **before** `jobRecordSchema.sh`'s default in every reader.
+**Recommended fix:** call `ssLoadConfig` at the TOP of `jobRecordSchema.sh`, before
+the `JR_REF_CLASS=${JR_REF_CLASS-...}` line — it is already the SSOT for the var and
+every reader sources it. NOTE this touches a **v2 file**, so it sequences with the
+v2 re-land. (Alternative: add the loader call before each `. jobRecordSchema.sh` in
+the schema-consuming tools — more sites, no v2-file touch.) The end-to-end
+`jrRefClass hg38 → mammal` harness test is what proves whichever path is chosen.
 
 ### 2. Config-key registry (`config/config.schema`)
 Declarative, the single source of truth for what is user-editable (keeps the bash
@@ -140,3 +177,33 @@ Build the v2-independent core only once the base tree stabilizes; write the
 its final API. Full source plan is auto-saved only inside the originating session's
 container at `/root/.claude/plans/delegated-coalescing-clover.md` (not accessible to
 other sessions) — this committed doc is the shareable copy.
+
+## Implementation decisions (2026-10-31)
+
+**Locked:**
+- **Build only AFTER PR 1 (v2, `fix/jobrecords-v2-migration`) AND PR B (slurmless
+  subdir, `prep/add-slurmless`) have merged to `ld32:master`.** Both are needed: v2
+  for `JR_REF_CLASS`/`jrRefClass()`, slurmless in-tree for the verification blocks.
+- **`ssLoadConfig()` lives in the existing `bin/utils.sh`** (not a new file).
+
+**Still open (decide before coding):**
+1. `JR_REF_CLASS` load order (§1b): loader call atop `jobRecordSchema.sh` (touches a
+   v2 file, recommended) vs a per-tool call before each `. jobRecordSchema.sh`.
+2. Packaging: one `feat/smartslurm-config` branch with a peelable v2-independent core,
+   vs two PRs (core first, refgroup+harness after).
+
+## Build order (commit-sized units)
+
+**Track A — v2-independent core:** (A1) `ssLoadConfig()` in `bin/utils.sh`; (A2)
+self-overlay line at end of `config/config.txt`; (A3) convert the 7 bash sites
+(§1 list) to the loader, keeping estimateResource.sh's lazy guard +
+`smartSlurmJobRecordDir` preservation; (A4) `reviewJobRecords.py` reads effective
+config via a subshell source; (A5) `config/config.schema` registry; (A6)
+`bin/smartSlurmConfig.sh` (`list/get/set/unset/edit`, writes only `user.conf`,
+atomic, validated); (A7) `config)` dispatch + help in `bin/smartslurm.sh`; (A8)
+`partition` guided editor; (A9) `config migrate`.
+
+**Track B — v2-coupled:** (B1) `refgroup` editor (needs the §1b ordering fix); (B2)
+slurmless harness blocks (`config_overlay`, `config_set`, `config_migrate`,
+`config_refgroup`, `config_partition`, `config_validation`) + an every-converted-tool
+override test (guards against a missed sourcing site).
