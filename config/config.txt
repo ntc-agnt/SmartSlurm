@@ -185,3 +185,18 @@ nextTimeAfterFail() {  # <currentTime_min> [recentFails] -> escalated time (int 
     echo "($ct*$f*1.2)/1" | bc
 }
 export -f nextTimeAfterFail
+
+# ---------------------------------------------------------------------------
+# Overlay config model (see `smartslurm config`). Everything above is the
+# repo DEFAULT config. A user's own changes live in a small override file,
+# ~/.smartSlurm/config/user.conf, holding ONLY the scalar keys they changed
+# (written by `smartslurm config set/unset/refgroup/partition`). It is sourced
+# LAST so it wins over the defaults, and it is never git-tracked, so:
+#   * `git pull` can update these defaults without clobbering user changes (Q1), and
+#   * new upstream defaults are picked up automatically, with no migration (Q2).
+# Tools source THIS repo file (not a full copy in ~/.smartSlurm), so the overlay
+# applies everywhere. user.conf must contain only `export VAR=value` scalars,
+# never functions. Guarded so a missing file is a harmless no-op.
+if [ -n "${HOME:-}" ] && [ -f "$HOME/.smartSlurm/config/user.conf" ]; then
+    . "$HOME/.smartSlurm/config/user.conf"
+fi

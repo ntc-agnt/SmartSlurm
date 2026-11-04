@@ -182,6 +182,7 @@ Usage:
                            additions (anything you added afterward is kept).
   smartslurm uninstall     Remove the smartSlurm block from your shell rc file.
   smartslurm status        Show whether SmartSlurm is currently active.
+  smartslurm config ...    View/edit config: list, get, set, unset, edit, refgroup, partition, migrate.
   smartslurm help          Show this message.
 EOF
 }
@@ -195,6 +196,7 @@ smartslurm() {
         deactivate) _ss_deactivate "$@" ;;
         uninstall)  _ss_uninstall "$@" ;;
         status)     _ss_status "$@" ;;
+        config)     bash "$SMARTSLURM_HOME/bin/smartSlurmConfig.sh" "$@" ;;
         help|-h|--help) _ss_help ;;
         *) echo "smartslurm: unknown command '$cmd'" >&2; _ss_help; return 2 ;;
     esac

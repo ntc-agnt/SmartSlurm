@@ -162,24 +162,12 @@ echolog1 runAsPipeline run date: $current_date
 
 #echolog1 `module list`
 
-if [ -f ~/.smartSlurm/config/config.txt ]; then
-
-    if [ -f $(dirname $0)/../config/config.txt ]; then 
-        if [ ~/.smartSlurm/config/config.txt -nt "$(dirname "$0")/../config/config.txt" ]; then
-            echolog1 "~/.smartSlurm/config/config.txt is newer than $(dirname "$0")/../config/config.txt, using ~/.smartSlurm/config/config.txt"
-        else
-            echo "Error: ~/.smartSlurm/config/config.txt is older than $(dirname "$0")/../config/config.txt, using ~/.smartSlurm/config/config.txt"
-            echo "Do you need to update it? Exiting..."
-            exit 1
-        fi 
-    fi 
-
-    echolog1 Config file path: ~/.smartSlurm/config/config.txt
-    source ~/.smartSlurm/config/config.txt
-else
-    echolog1 Config file path: $(dirname $0)/../config/config.txt
-    source $(dirname $0)/../config/config.txt || { echoerr Config list file not found: config.txt; exit 1; }
-fi
+# Always source the repo config; it self-overlays ~/.smartSlurm/config/user.conf.
+# (Previously this exclusively sourced a full ~/.smartSlurm/config/config.txt and
+# EXITED when that home copy was older than the repo's — a fragility the overlay
+# model removes, since there is no full home copy to go stale.)
+echolog1 Config file path: $(dirname $0)/../config/config.txt
+source $(dirname $0)/../config/config.txt || { echoerr Config list file not found: config.txt; exit 1; }
 
 [[ "$smartSlurmLogDir" == /* ]] || export smartSlurmLogDir=$PWD/$smartSlurmLogDir
 

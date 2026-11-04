@@ -32,11 +32,8 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 
-if [ -f ~/.smartSlurm/config/config.txt ]; then
-    source ~/.smartSlurm/config/config.txt
-else
-    source $(dirname $0)/../config/config.txt || { echoerr Config list file not found: config.txt; exit 1; }
-fi
+# Always source the repo config; it self-overlays ~/.smartSlurm/config/user.conf.
+source $(dirname $0)/../config/config.txt || { echoerr Config list file not found: config.txt; exit 1; }
 
 #export smartSlurmLogDir=smartSlurmLog #log
 

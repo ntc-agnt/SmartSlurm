@@ -7,11 +7,8 @@ usage() { echo -e "Usage: \n${0##*/} Rename jobRecord folder and job log folder,
 [ -z "$1" ] || usage
 
 if [ -z "$smartSlurmJobRecordDir" ]; then
-    if [ -f ~/.smartSlurm/config/config.txt ]; then
-        source ~/.smartSlurm/config/config.txt
-    else
-        source $(dirname $0)/../config/config.txt || { echo Config list file not found: config.txt; exit 1; }
-    fi
+    # Always source the repo config; it self-overlays ~/.smartSlurm/config/user.conf.
+    source $(dirname $0)/../config/config.txt || { echo Config list file not found: config.txt; exit 1; }
 fi
 
 if [ -d $smartSlurmJobRecordDir ]; then 
