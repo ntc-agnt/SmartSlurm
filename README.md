@@ -128,6 +128,7 @@ your rc file.
 | `smartslurm deactivate` | Removes **only** SmartSlurm's own `PATH` entries and prompt prefix, restoring the system `sbatch`. Anything you added *after* activating — a `conda activate`, a `module load`, your own exports — is left untouched. |
 | `smartslurm status` | Reports whether SmartSlurm is active and whether `sbatch` currently resolves to the smart alias or the system binary. |
 | `smartslurm uninstall` | Removes the initialize block from your rc file (with a backup). New shells will no longer know the command. |
+| `smartslurm config ...` | View and safely edit your config (overlay model, see [below](#editing-config--smartslurm-config)): `list`, `get`/`set`/`unset` a key, guided `refgroup` and `partition` editors, and `migrate`. Changes go to `~/.smartSlurm/config/user.conf` and survive upgrades. |
 
 > [!NOTE]
 > The prompt prefix uses curly braces — `{smartSlurm} ` — deliberately distinct
@@ -314,7 +315,7 @@ rnaseq,findNumber,none,,46534,4395,9,2048,4,120,1,COMPLETED,ld32,node02,17198310
 Ships at `SmartSlurm/config/config.txt`. It defines the partition time limits, the `adjustPartition` function, and defaults such as where records and logs live.
 
 > [!TIP]
-> Copy it to `~/.smartSlurm/config/config.txt` to override settings for just yourself. Your personal copy wins over the shared one — handy on a shared cluster. (SmartSlurm refuses to run if your personal copy is *older* than the shared one, to stop you using a stale config; see [Upgrading](#upgrading) to refresh it.)
+> **Don't hand-edit this file to change your own settings** — use `smartslurm config` ([below](#editing-config--smartslurm-config)). Your changes go into a small overlay file, `~/.smartSlurm/config/user.conf`, that holds only the keys you changed; the repo `config.txt` sources it **last**, so your values win. A `git pull` can then update the defaults without clobbering your settings, and you automatically pick up new upstream defaults — no stale-config problem and no per-upgrade migration. (Older versions used a *full copy* at `~/.smartSlurm/config/config.txt`; `smartslurm config migrate` converts one to the overlay for you.)
 
 Key settings:
 
@@ -339,6 +340,38 @@ adjustPartition() { ...; }
 > **`firstBatchCount` (5) and the "3 records" rule are different things.**
 > - **3 records** is the minimum ssbatch needs before it can *estimate* resources for a program.
 > - **`firstBatchCount=5`** is used only by `runAsPipeline`: it lets the first 5 independent jobs of a step run immediately, and submits the rest **held** (`-H`) until early jobs finish and produce records, then releases them with estimated resources.
+
+### Editing config — `smartslurm config`
+
+Instead of hand-editing `config.txt` (and risking a `git pull` clobbering it, or
+missing new defaults), edit your settings with `smartslurm config`. It writes only
+`~/.smartSlurm/config/user.conf` — a small overlay of the keys you changed — which
+the repo `config.txt` sources last.
+
+```bash
+smartslurm config list                      # every editable key: effective value, default, overridden?
+smartslurm config get defaultMem            # one value
+smartslurm config set defaultMem 8192       # change it (validated against config.schema)
+smartslurm config unset defaultMem          # revert to the repo default
+smartslurm config edit                      # open user.conf in $EDITOR
+
+# guided editors for the structured settings:
+smartslurm config partition list
+smartslurm config partition short --time-limit 1440 --mem-limit 250000
+smartslurm config refgroup list
+smartslurm config refgroup add dm3 dm6 --group fly     # pool these refs' history for estimation
+smartslurm config refgroup remove dm6
+
+# one-time, for users upgrading from the old full-copy model:
+smartslurm config migrate                   # diff a legacy ~/.smartSlurm/config/config.txt -> user.conf
+```
+
+`set` validates against `config/config.schema` (the registry of editable keys and
+their types); an unknown key is accepted but flagged as *custom (unvalidated)*. The
+`refgroup` editor manages `JR_REF_CLASS` (which references share a learned
+resource-estimation history), and `partition` edits the `partitionNName/MemLimit/TimeLimit`
+slots. Only scalar knobs are editable — the bash *functions* in `config.txt`
+(`adjustPartition`, …) are left to hand-editing.
 
 ### Resource estimation
 

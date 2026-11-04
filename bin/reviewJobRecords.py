@@ -16,6 +16,7 @@ from pathlib import Path
 import glob
 import sys
 import tempfile
+import subprocess
 
 # ── File path resolution ───────────────────────────────────────────────────────
 
@@ -24,24 +25,19 @@ if len(sys.argv) == 2:
     smartSlurmJobRecordDir = str(job_file.parent)
 else:
     script_dir = Path(__file__).resolve().parent
-    home_config = Path.home() / ".smartSlurm/config/config.txt"
-    local_config = script_dir.parent / "config/config.txt"
-
-    if home_config.is_file():
-        config_path = home_config
-    elif local_config.is_file():
-        config_path = local_config
-    else:
+    repo_config = script_dir.parent / "config/config.txt"
+    if not repo_config.is_file():
         raise FileNotFoundError("Config file not found: config.txt")
 
-    smartSlurmJobRecordDir = None
-    with open(config_path, "r") as config_file:
-        for line in config_file:
-            if line.startswith("export smartSlurmJobRecordDir="):
-                smartSlurmJobRecordDir = line.strip().split("=", 1)[1].replace(
-                    "$HOME", str(Path.home())
-                )
-                break
+    # Read the EFFECTIVE smartSlurmJobRecordDir the same way the shell tools do:
+    # source the repo config (which self-overlays ~/.smartSlurm/config/user.conf)
+    # in a subshell, so a user override wins and shell expansions ($HOME, etc.)
+    # resolve correctly — rather than picking one file and string-parsing it.
+    smartSlurmJobRecordDir = subprocess.run(
+        ["bash", "-c",
+         f'. "{repo_config}" >/dev/null 2>&1; printf %s "$smartSlurmJobRecordDir"'],
+        capture_output=True, text=True,
+    ).stdout.strip() or None
 
     if not smartSlurmJobRecordDir:
         raise ValueError("smartSlurmJobRecordDir not found in config.")

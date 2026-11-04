@@ -1,0 +1,27 @@
+# config.schema — registry of the user-editable SCALAR config keys.
+#
+# One key per line:  name|type|default|category|help
+#   type     : int | string | path | bool | enum[a,b,c]
+#   category : general | partitions | refgroups
+#
+# This is the single source of truth for what `smartslurm config set/get/list`
+# will touch and how it validates. The bash *functions* in config.txt
+# (adjustPartition, nextMemAfterFail, …) are deliberately NOT here — they are not
+# user-editable through this tool. Partitions are edited with
+# `smartslurm config partition …` and ref groups with
+# `smartslurm config refgroup …` (both validate structurally), so only the general
+# scalar knobs are listed below. A key a user sets that is not in this schema is
+# accepted and shown by `list` as "custom (unvalidated)".
+#
+defaultMem|int|4096|general|Default memory (MB) for a job with no learned estimate yet
+defaultTime|int|120|general|Default wall time (minutes) for a job with no learned estimate yet
+defaultExtraMem|int|500|general|Safety margin (MB) added on top of the estimated memory
+defaultExtraTime|int|10|general|Safety margin (minutes) added on top of the estimated time
+targetFirstPassPct|int|93|general|Target %% of jobs that complete on first submission (estimate percentile, 1-100)
+firstBatchCount|int|5|general|Number of jobs in the first learning batch before estimates kick in
+numberOfFailedJobsLastHourToRecalculateStats|int|5|general|Recent-failure count that triggers a stats recalculation
+effLowPct|int|25|general|Efficiency (%%) below which a job is flagged as over-allocated
+defaultSlurmAcc|string||general|Default Slurm account (sbatch -A); empty uses the cluster default
+condaEnvPath|path|$HOME/.conda/envs/smartSlurmEnv|general|Path to the SmartSlurm conda environment
+smartSlurmJobRecordDir|path|$HOME/.smartSlurm|general|Directory holding the job-record learning database
+smartSlurmLogDir|string|smartSlurmLog|general|Per-run log directory name (relative to the run directory)
