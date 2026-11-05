@@ -1,0 +1,2 @@
+# transient eval run artifacts (ports are regenerated per run)
+variants/*/port/

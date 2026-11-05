@@ -1,0 +1,28 @@
+# Slurmless runtime / scratch artifacts.
+# The harness is meant to run in a scratch workspace (SS_SCRATCH), never in the
+# repo root. These patterns catch the debris when a pipeline is accidentally run
+# in-tree (or a demo leaks its outputs here), so it is never committed.
+
+# SmartSlurm per-run logs and record dirs
+.smartSlurm.log
+.smartSlurm.log.*
+smartSlurmLog/
+smartSlurmLogs/
+
+# Mock-Slurm state / default scratch root
+/tmp/ss-scratch/
+.jobseq
+.jobseq.lock
+.jobseq.lck/
+
+# Common demo/test payload + output debris dropped at the repo root
+/pipeline.sh
+/findNumber.sh
+/mergeNumber.sh
+/numbers*.txt
+/all*.txt
+/[0-9]*.txt
+
+# Editor / OS noise
+*.swp
+.DS_Store
