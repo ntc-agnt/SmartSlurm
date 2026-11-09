@@ -58,9 +58,12 @@ _userconf_keys() {
 _in_userconf() { _userconf_keys | grep -qx "$1"; }
 
 # --- quote a value for a sourceable `export K=V` line -------------------------
-# Double-quote so spaces work and $HOME/$VAR still expand at source time (matching
-# config.txt's own style); escape only what would break the double-quoted string.
-_q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"`]/\\&/g')"; }
+# Double-quote so spaces work, and store the value LITERALLY: escape \ " ` AND $.
+# Escaping $ is a security requirement -- config.txt sources user.conf on every
+# tool run, so an unescaped value like '$(cmd)' or '`cmd`' would EXECUTE, and a
+# literal '$x' would silently expand to empty. Values are therefore literal (a
+# '$HOME' in a value is kept verbatim, not expanded) -- predictable and safe.
+_q() { printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"`$]/\\&/g')"; }
 
 _ensure_userdir() {
   mkdir -p "$USERDIR" || die "cannot create $USERDIR"
@@ -240,6 +243,18 @@ cmd_partition() {
   cmd_partition list
 }
 
+# Extract the logical value from the RHS of a legacy `export K=RHS` line, honoring
+# quotes: a '#' INSIDE quotes is part of the value, not an inline comment. Only a
+# whitespace-preceded '#' OUTSIDE quotes starts a comment. Returns the unquoted value.
+_mval() {
+  printf '%s' "$1" | sed -E '
+    s/^[[:space:]]+//; s/[[:space:]]+$//
+    s/^"([^"]*)".*$/\1/; t
+    s/^'\''([^'\'']*)'\''.*$/\1/; t
+    s/[[:space:]]+#.*$//; s/[[:space:]]+$//
+  '
+}
+
 # --- migrate a legacy full ~/.smartSlurm/config/config.txt --------------------
 cmd_migrate() {
   local legacy="$USERDIR/config.txt"
@@ -252,14 +267,14 @@ cmd_migrate() {
   local n=0 k v repv
   # compare RAW values line-by-line (avoids $HOME-expansion false diffs)
   while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"       # tolerate indented 'export' lines (no silent key loss)
     case "$line" in export\ *=*) : ;; *) continue;; esac
     k="$(printf '%s' "$line" | sed -n 's/^export[[:space:]]\{1,\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p')"
     [ -n "$k" ] || continue
     v="$(printf '%s' "$line" | sed 's/^export[[:space:]]\{1,\}[A-Za-z_][A-Za-z0-9_]*=//')"
     repv="$(grep -m1 "^export[[:space:]]\{1,\}${k}=" "$REPO_CONFIG" 2>/dev/null | sed 's/^export[[:space:]]\{1,\}[A-Za-z_][A-Za-z0-9_]*=//')"
-    # strip trailing inline comments + surrounding quotes/space for comparison
-    local a b; a="$(printf '%s' "$v"   | sed 's/[[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/^["'\'']//; s/["'\'']$//')"
-                b="$(printf '%s' "$repv" | sed 's/[[:space:]]*#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//; s/^["'\'']//; s/["'\'']$//')"
+    # quote-aware extraction: a '#' inside a quoted value is kept, not treated as a comment
+    local a b; a="$(_mval "$v")"; b="$(_mval "$repv")"
     if [ "$a" != "$b" ]; then _upsert "$k" "$a"; n=$((n+1)); echo "  kept override: $k=$a (repo default: ${b:-<empty>})"; fi
   done < "$legacy"
   mv "$legacy" "${legacy}.pre-overlay.bak"
