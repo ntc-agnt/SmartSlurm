@@ -1,0 +1,103 @@
+# SmartSlurm fork CI — runs the slurmless harness against the code under test,
+# under BOTH gawk and mawk. This gates YOUR branches/PRs on the ntc-agnt fork
+# before anything is hand-landed on ld32/master (master push stays human-only).
+#
+# It is a REGRESSION gate, not a coverage gate: it fails only when a change breaks
+# an existing check. Changes in areas the harness does not cover pass green — close
+# such gaps by adding harness blocks / adversary guards, not by editing this file.
+name: harness
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# A newer push to the same ref cancels an in-flight run (saves CI minutes).
+concurrency:
+  group: harness-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: harness (${{ matrix.awk }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false          # run both awk legs even if one fails
+      matrix:
+        awk: [gawk, mawk]        # mawk ignores {n,} interval regexes — the silent trap
+    steps:
+      - name: Check out SmartSlurm (the code under test)
+        uses: actions/checkout@v4
+
+      - name: Install tools (gawk, mawk, gnuplot)
+        run: sudo apt-get update && sudo apt-get install -y gawk mawk gnuplot
+
+      - name: Locate the slurmless harness
+        id: harness
+        run: |
+          set -euo pipefail
+          # Prefer a vendored copy (SmartSlurm/slurmless/) when present; otherwise the
+          # next step checks out the standalone harness repo.
+          if [ -x slurmless/bootstrap.sh ]; then
+            echo "dir=slurmless" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=_harness" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the slurmless harness (when not vendored)
+        if: steps.harness.outputs.dir == '_harness'
+        uses: actions/checkout@v4
+        with:
+          repository: ntc-agnt/slurmless_smartSlurm_testing
+          ref: main
+          path: _harness
+          # Default token reads a PUBLIC harness repo fine. If the harness repo is
+          # PRIVATE, add a repo secret HARNESS_RO_TOKEN (a fine-grained PAT with
+          # read/contents on it) — the fallback below uses it automatically.
+          token: ${{ secrets.HARNESS_RO_TOKEN || github.token }}
+
+      - name: Force awk = ${{ matrix.awk }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/awkshim"; mkdir -p "$d"
+          ln -sf "$(command -v ${{ matrix.awk }})" "$d/awk"
+          echo "$d" >> "$GITHUB_PATH"      # prepend so `awk` resolves to the matrix impl
+
+      - name: Baseline — bootstrap (clean_2step)
+        env:
+          SMARTSLURM_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          "${{ steps.harness.outputs.dir }}/bootstrap.sh"
+
+      - name: Core harness blocks
+        env:
+          SMARTSLURM_ROOT: ${{ github.workspace }}
+          # CI coverage lives here. `run_tests.sh --list` shows every block; the full
+          # suite is intentionally slow, so CI runs the jR/migration + estimator core.
+          # Add blocks as coverage grows.
+          BLOCKS: >-
+            migrate_v1 jr_drift_guard cross_pipeline legacy_pooling
+            contaminate_prune failure_floor resubmit_convergence
+        run: |
+          set -euo pipefail
+          "${{ steps.harness.outputs.dir }}/test/run_tests.sh" $BLOCKS
+
+      - name: Curation guards (only when this branch ships jrCurate)
+        env:
+          SMARTSLURM_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ -f bin/jrCurate.sh ]; then
+            for g in jr_curate_adversary2 jr_curate_adversary3; do
+              f="${{ steps.harness.outputs.dir }}/test/$g.sh"
+              [ -f "$f" ] && { echo "== $g =="; bash "$f"; }
+            done
+          else
+            echo "bin/jrCurate.sh not in this branch -> skipping curation guards"
+          fi
