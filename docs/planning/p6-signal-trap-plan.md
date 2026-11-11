@@ -21,7 +21,59 @@ remain the job of **fate-reconcile** (grid `?` + `diagnose` sacct fallback). P6 
 fate-reconcile are complementary: P6 shrinks the vanished set to the truly-uncatchable
 cases; fate-reconcile recovers whatever is left.
 
-## 2. The four coordinated changes
+## 1a. Criticality: is P6 worth it, given fate-reconcile? (read before building)
+
+fate-reconcile (the checkRun work, already built) gives **visibility** for *every*
+vanished job — including the OOM/SIGKILL cases P6 can **never** help. P6's marginal
+value over that is narrow:
+
+| | fate-reconcile (done) | P6 adds |
+|---|---|---|
+| OOM / cgroup SIGKILL | grid `?` → diagnose OOM | **nothing** (uncatchable) |
+| Node fail / scancel | grid `?` → diagnose CANCELLED | nothing useful (scancel must not resurrect) |
+| **Timeout** (vanished) | grid `?` → diagnose OOT | **auto-requeue with more time** (self-heal) |
+
+So P6's *only* real gain is **auto-requeueing vanished timeouts** — and even that is
+partly covered already: rAP's resume-on-rerun re-attempts a non-`.success` step on the
+next pipeline run, and fate-reconcile tells the user *which* step and *why*. Against
+that thin benefit, P6 is the **highest-blast-radius** change on the table (A0 rewrites
+every job's tool-invocation hot path; plus cleanUp re-entrancy + classification).
+
+**Recommendation:** treat P6 as **low priority / optional**. Build it only if
+*auto-requeue of vanished timeouts* is a named pain point. If it is, consider the
+cheaper alternative first: have the fate-reconcile path (or a scheduled reconcile)
+**requeue** a resolved-OOT vanished job, reusing the checkRun machinery and leaving
+the job hot path untouched — most of P6's benefit without the A0 risk. Full P6 (below)
+is the write-time, no-user-needed version, justified only if self-heal must happen
+without anyone looking at checkRun.
+
+## 2. The coordinated changes
+
+### A0. ssbatch job body — run the tool as `& wait` (THE ENABLER; found test-first)
+**A trap alone is inert.** rAP runs the tool as a **foreground** command (ssbatch
+~680/32/36): `srun … sh -e -o pipefail -c '$wrapCMD' && touch $succFlag`. The bash
+manual: *"If bash is waiting for a command to complete and receives a signal for
+which a trap has been set, the trap will **not** be executed until the command
+completes."* So a `USR1`/`TERM` to the batch shell while the tool runs is **deferred**
+until the tool ends — and Slurm's hard `SIGKILL` at the limit kills the whole job
+first, so the trap never fires. The job still vanishes. *(Confirmed empirically.)*
+
+The same passage gives the fix: *"When bash is waiting for an asynchronous command via
+the `wait` builtin, the reception of a signal for which a trap has been set will cause
+`wait` to return immediately … after which the trap is executed."* So run the tool in
+the **background** and `wait`:
+```
+srun -n 1 … sh -e -o pipefail -c '$wrapCMD' &
+_tool=$!
+wait "$_tool"; _rc=$?
+[ "$_rc" -eq 0 ] && touch $succFlag && { adjustDownStreamJobs…sh || : ; }
+```
+Now a grace signal during `wait` fires the trap promptly → cleanUp runs inside the
+grace. This is the **hot-path** change — it rewrites how *every* job runs its tool,
+across all three variants (checkpoint, normal, normal+downstream), and must preserve
+exit-code propagation under `set -e`/`-o pipefail` and the `&& touch success &&
+{adjustDownstream}` chain. Highest-risk part of P6; test it hardest (the
+`clean_2step`/`oom_injection`/`resubmit_convergence` blocks all exercise this line).
 
 ### A. ssbatch job wrapper — trap `TERM`/`USR1`, run-once, pass the reason
 `bin/ssbatch` generates the per-step job script at **lines 655 and 725**, currently:
@@ -135,6 +187,7 @@ export smartSlurmKillGrace=60
 
 | File | Change | Lines |
 |---|---|---|
+| `bin/ssbatch` | **tool `& wait` (A0)** — rewrites the tool-invocation line, 3 variants | ~680, 32, 36 — **hot path** |
 | `bin/ssbatch` | teardown function + TERM/USR1 traps | 2 sites (655, 725) |
 | `bin/ssbatch` | `--signal=B:USR1@grace` on submit + requeue template | ~788, ~799 |
 | `bin/cleanUp.sh` | run-once lock (top) + USR1→OOT classification (+ optional sleep skip) | ~3 small inserts |
