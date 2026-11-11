@@ -1,9 +1,19 @@
 # Plan: P6 — signal-trap hardening so timeouts/scancels self-record (not vanish)
 
-> **Status:** spec for review. High blast radius (touches `cleanUp.sh`, the 805-line
-> teardown/requeue script). Circulate before implementing.
+> **Status: PARKED (2026-11-11).** No `bin/` is touched. These traps turn on subtle
+> bash/kernel signal-timing (trap deferral during a foreground command, trap-during-
+> `wait`, EXIT re-entry after a signal, the USR1→SIGKILL grace race) that is easy to
+> get wrong and hard to diagnose, and P6's marginal value over fate-reconcile is thin
+> (§1a). Decision: **do not edit `cleanUp.sh`/`ssbatch` now.** What *is* built is the
+> **crystal-clear, timing-deterministic test harness** this work must sit on before any
+> edit (§6a) — so if we return to P6, the risky change lands against an executable spec
+> with a proven zero-flake rig and a byte-identical back-compat gate, not a leap.
+>
+> **Earlier status:** spec for review. High blast radius (touches `cleanUp.sh`, the
+> 805-line teardown/requeue script).
 > **Depends on:** the slurmless signal harness (`MOCK_FAIL_MODE=sigkill/sigterm`,
-> `hardkill`/`cleanup_reentrancy` blocks) — already merged on the harness branch.
+> `hardkill` block) + the opt-in P6 timing blocks (`p6_signal_sequence`,
+> `p6_determinism`, `cleanup_reentrancy`; §6a) — on the harness branch.
 
 ---
 
@@ -199,6 +209,10 @@ grid/diagnose/fate-reconcile stack.
 
 ## 6. Test plan (all in the slurmless sandbox)
 
+> The timing-determinism rig this builds on (the model blocks + the determinism and
+> back-compat gates) is **already built and opt-in** — see **§6a**. The bullets below
+> are the landing-time tests that need the real `bin/` change to exist.
+
 - **`cleanup_reentrancy`** (already built, currently FAILS by design): B1 flips it to
   PASS (one efficiency.tsv row). Then promote it into `ALL_BLOCKS`.
 - **New `sigterm_selfrecord`** (via the `sigterm` mode): with the P6 trap, a SIGTERM'd
@@ -212,6 +226,60 @@ grid/diagnose/fate-reconcile stack.
   `fate_reconcile`, `diagnose`, `clean_2step`, `checkrun_efficiency`.
 - **Adversarial pass** on the final diff (lock races; requeue-key correctness; the
   TERM-vs-USR1 split; grace interplay with the `sleep 5`).
+
+## 6a. Timing-determinism test harness (BUILT, opt-in — the "crystal-clear" setup)
+
+The traps hinge on signal-timing that is **easy to mess up and hard to diagnose**, so
+before any `bin/` edit we built a harness that makes the timing **deterministic** and
+the back-compat requirement **mechanical**. It is in slurmless **today** and touches no
+`bin/`. Run it with `./test/run_tests.sh p6`.
+
+**Why this is subtle (the failure modes the harness pins down):**
+- **Trap deferral during a foreground command** — the A0 discovery (§2 A0). A `USR1`/
+  `TERM` to the batch shell while the tool runs *foreground* is deferred until the tool
+  ends; Slurm's `SIGKILL` lands first, so the trap never fires and the job vanishes
+  anyway. The fix (tool as `& wait`) makes a trapped signal interrupt `wait` at once.
+  The harness proves the *difference* is real and repeatable rather than a lucky race.
+- **EXIT re-entry after a signal** — the `TERM`/`USR1` handler `exit`s, which fires the
+  `EXIT` trap, so teardown has **two** in-process entry points. Without the run-once
+  guard that double-appends jobRecords/efficiency and **double-requeues**.
+- **The grace race** — USR1 at `T-grace`, then an uncatchable SIGKILL at `T`. Teardown
+  must finish inside the window; a partial teardown must still be recoverable.
+
+**Principle: determinism via BARRIERS, never wall-clock.** The earlier flakiness/hang
+came from `sleep N; signal; hope it raced in right`. Instead the payload announces it
+has reached a known lifecycle point and **blocks**; the harness waits for that point,
+**then** delivers the signal, **then** releases. The event order is *controlled*, so
+the trap always fires the same way. (Empirically: 20–30× per case, zero variance.)
+
+**What is built (all opt-in via `_optin`; never in the default suite, so they can't red
+a bare `./run_tests.sh`, bootstrap, or `-jN` run):**
+- **`p6_signal_sequence`** — a self-contained **MODEL** of the proposed rAP job body
+  (tool as `& wait`; run-once-guarded cleanup trapped on EXIT/TERM/USR1), driven through
+  the deterministic sequence matrix: **S0/S0b** back-compat (clean success + nonzero
+  exit behave exactly as today's EXIT-only path), **S1** TERM mid-tool, **S2** USR1
+  grace-signal mid-tool, **S6** post-completion no-op — each asserting the cleanup body
+  runs **exactly once**. This is the **executable spec** the eventual `cleanUp`/`ssbatch`
+  edit must satisfy.
+- **`p6_determinism`** — the anti-flake guarantee: re-run the TERM/USR1/no-signal cases
+  **20× each** and assert a single distinct outcome (zero variance). A timing regression
+  fails loudly instead of flaking.
+- **`cleanup_reentrancy`** — probes the **REAL** `cleanUp` (not the model): invokes it
+  twice on one job and asserts single effects. **Expected red until B1 lands**; it flips
+  to green when the run-once lock is added, at which point promote it into `ALL_BLOCKS`.
+
+**The back-compat gate (to build AT LANDING, needs the `bin/` change to exist):** a
+**differential** — run clean/oom/timeout/nonzero/oomoot + the estimator blocks twice,
+once with the unmodified foreground wrapper and once with the `& wait` wrapper, and
+assert **byte-identical** artifacts (markers, jobRecord, efficiency.tsv, exit codes,
+`.success`). The hot-path change lands **only** if that diff is empty across the suite.
+The in-harness S0/S0b cases are the model-level stand-in for this gate until then.
+
+> Note on scope: the model blocks test the *timing semantics* of the proposed design in
+> isolation; they are **not** a substitute for exercising the real `ssbatch`/`cleanUp`
+> once edited. They exist so that, when P6 is unparked, the first step is "point the
+> differential at old-vs-new `ssbatch` and make S0–S6 pass against the real tool," not
+> "design the test rig under pressure."
 
 ## 7. Rollout sequencing (each step green in sandbox before the next)
 
