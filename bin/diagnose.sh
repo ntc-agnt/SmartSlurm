@@ -42,6 +42,10 @@ done
 
 OUT="$LOGDIR/$FLAG.out"
 
+# Shared live-state classifier (the same squeue snapshot the grid reads), so a
+# diagnose card can never contradict the grid cell. Read-only; no scheduler call.
+. "$(dirname "$0")/liveState.sh" 2>/dev/null || true
+
 # ---------- ordered pattern table: strongest / most tool-independent first ----
 # fields are TAB-separated: category <TAB> action <TAB> extended-regex
 # (regexes may contain ':', so ':' is NOT the delimiter)
@@ -87,17 +91,21 @@ region_offset=$rstart    # .out line = region_offset + (region line number)
 report_state() {
   local rep
   if [ "$rend" -gt 0 ] && [ -f "$OUT" ]; then rep="$(sed -n "${rend},\$p" "$OUT")"; else rep=""; fi
-  # look for raw sacct State tokens (delimiter-agnostic), strongest first
+  # look for raw sacct State tokens (delimiter-agnostic), strongest first. Covers all
+  # of Slurm's terminal states (incl. DEADLINE/PREEMPTED/REVOKED/SPECIAL_EXIT), in
+  # step with jobFate.sh map_state(), so an in-log report never leaves a terminal job
+  # unclassified.
   if   grep -q 'OUT_OF_ME' <<<"$rep"; then echo OOM
-  elif grep -q 'TIMEOUT'   <<<"$rep"; then echo OOT
-  elif grep -qE 'NODE_FAIL|BOOT_FAIL' <<<"$rep"; then echo NODE_FAIL
+  elif grep -qE 'TIMEOUT|DEADLINE'   <<<"$rep"; then echo OOT
+  elif grep -qE 'NODE_FAIL|BOOT_FAIL|PREEMPTED|REVOKED' <<<"$rep"; then echo NODE_FAIL
   elif grep -q 'CANCEL'    <<<"$rep"; then echo CANCELLED
+  elif grep -q 'SPECIAL_EXIT' <<<"$rep"; then echo FAILED
   elif grep -q 'FAILED'    <<<"$rep"; then echo FAILED
   elif grep -q 'COMPLETED' <<<"$rep"; then echo COMPLETED
   else echo ""; fi
 }
 
-requeued=""; STATE=""
+requeued=""; STATE=""; live_jobid=""
 if [ -e "$LOGDIR/$FLAG.success" ]; then
   STATE=COMPLETED
 elif compgen -G "$LOGDIR/$FLAG.failed.requeued.*.mem"    >/dev/null 2>&1; then STATE=OOM;    requeued=1
@@ -115,22 +123,38 @@ else
     # so fall through to the FAILED branch which scans the log for the cause.
     STATE=FAILED
   elif [ -n "$RECONCILE" ]; then
-    # Cold-path fallback -- ONLY when the caller opts in (--reconcile), which only
-    # the single-job interactive drill-ins do. The log and flags are silent because
-    # a hard kill (OOM-killer, the SIGKILL after a timeout grace, node failure)
-    # bypassed cleanUp's EXIT trap, so nothing was recorded locally -- but Slurm
-    # accounting still has the verdict. jobFate resolves the fate, writes the
-    # .failed marker (not for CANCELLED -- see jobFate) and appends the sacct report
-    # so the grid and a later diagnose agree, and prints the state. A prior reconcile
-    # that already wrote a marker takes an earlier branch, so no redundant sacct.
+    # Opt-in AUTHORITATIVE path (the single-job interactive drill-ins): ask Slurm
+    # accounting FIRST, so a job that died INSIDE the squeue cache's TTL window (the
+    # grid refreshed the cache listing it "-R" just before a hard kill) is corrected
+    # to its real terminal fate instead of echoing a now-stale "running". jobFate
+    # bypasses cleanUp's missing EXIT-trap record and reads the verdict from sacct;
+    # it writes the .failed marker (not for CANCELLED -- see jobFate) and appends the
+    # report so the grid and a later diagnose agree. Only when sacct has NO terminal
+    # verdict (UNRESOLVED -- the job is genuinely still live, or vanished with
+    # post-job lag) do we consult the live cache to tell running/pending from gone.
     fate="$("$(dirname "$0")/jobFate.sh" "$FLAG" --log "$LOGDIR" 2>/dev/null)"
     case "$fate" in
       OOM|OOT|OOMOOT|NODE_FAIL|CANCELLED|FAILED) STATE="$fate" ;;
       COMPLETED)   STATE=COMPLETED_NOSUCCESS ;;   # finished per Slurm, no .success
-      *)           STATE=UNCONFIRMED ;;           # UNRESOLVED: no jobid/sacct, or lag
+      *)                                          # UNRESOLVED: is it live per squeue?
+        ls_load_ro "$LOGDIR"; live_jobid="$(ls_jobid "$FLAG" "$LOGDIR")"
+        case "$(ls_squeue_match "$live_jobid" "${LS_ACTIVE:-}" "${LS_SQ_OK:-0}")" in
+          running) STATE=RUNNING ;;
+          pending) STATE=PENDING ;;
+          *)       STATE=UNCONFIRMED ;;            # no jobid/sacct, or lag
+        esac ;;
     esac
   else
-    STATE=UNCONFIRMED     # read-only default: no flag, no scheduler query
+    # Read-only path (NO scheduler call): consult the shared squeue snapshot the grid
+    # uses. A POSITIVE squeue match -> a calm running/pending card (never weak
+    # .out-mtime evidence); otherwise the read-only UNCONFIRMED default. A caller that
+    # needs ground truth for an un-flagged job passes --reconcile (above).
+    ls_load_ro "$LOGDIR"; live_jobid="$(ls_jobid "$FLAG" "$LOGDIR")"
+    case "$(ls_squeue_match "$live_jobid" "${LS_ACTIVE:-}" "${LS_SQ_OK:-0}")" in
+      running) STATE=RUNNING ;;
+      pending) STATE=PENDING ;;
+      *)       STATE=UNCONFIRMED ;;
+    esac
   fi
 fi
 
@@ -155,14 +179,26 @@ scan_tool_region() {   # echoes: category <TAB> action <TAB> out_lineno <TAB> te
 
 region_tail() { grep -nvE '^[[:space:]]*$' "$REGION" 2>/dev/null | tail -3; }
 
-# ---------- is this job orphaned? (an upstream dependency did not succeed) -----
+# ---------- is this job orphaned? (an upstream dependency did not/ will not succeed)
+# Mirror checkRunGrid's orphan rule: an upstream is a cause only when its status is
+# error/unknown -- i.e. it has a terminal FAILURE marker (.failed / requeue-exhausted),
+# OR the shared live-state classifier reports it VANISHED (hard-killed / cancelled,
+# left no marker). A still-live upstream (running/pending) is NOT a cause, so a healthy
+# in-progress pipeline never false-alarms "orphaned"; and a markerless hard-killed
+# upstream is still caught (matching the grid) rather than read as a calm "pending".
 upstream_bad=""
 if [ -f "$LOGDIR/allJobs.txt" ]; then
+  ls_load_ro "$LOGDIR"
   dep="$(awk -v f="$FLAG" 'NR>1 && $3==f {print $2}' "$LOGDIR/allJobs.txt")"
   for d in ${dep//:/ }; do
     [[ "$d" =~ ^[0-9]+$ ]] || continue
     upflag="$(awk -v id="$d" 'NR>1 && $1==id {print $3}' "$LOGDIR/allJobs.txt")"
-    [ -n "$upflag" ] && [ ! -e "$LOGDIR/$upflag.success" ] && upstream_bad="$upflag"
+    { [ -n "$upflag" ] && [ ! -e "$LOGDIR/$upflag.success" ]; } || continue
+    if [ -e "$LOGDIR/$upflag.failed" ] || compgen -G "$LOGDIR/$upflag.failed.requeued.*" >/dev/null 2>&1; then
+      upstream_bad="$upflag"                    # error (failure marker)
+    elif [ "$(ls_state "$upflag" "$LOGDIR" "${LS_ACTIVE:-}" "${LS_SQ_OK:-0}" "$(ls_jobid "$upflag" "$LOGDIR")")" = vanished ]; then
+      upstream_bad="$upflag"                    # unknown (started, gone from a trustworthy squeue)
+    fi
   done
 fi
 
@@ -173,6 +209,19 @@ case "$STATE" in
   COMPLETED)
     failed="false"; category="none"; action="NONE"
     summary="completed successfully" ;;
+
+  RUNNING)
+    failed="false"; category="live:running"; action="WAIT"
+    summary="still running${live_jobid:+ (job $live_jobid)} — nothing has failed; diagnose reports on finished jobs, so check back when it completes (watch it in the grid, or tail the live log below)" ;;
+
+  PENDING)
+    if [ -n "$upstream_bad" ]; then
+      category="orphaned:upstream-failed"; action="CHECK_UPSTREAM"; STATE="ORPHANED"
+      summary="queued but will not run: upstream step '$upstream_bad' did not succeed — fix that first, then rerun"
+    else
+      failed="false"; category="live:pending"; action="WAIT"
+      summary="queued, not started yet${live_jobid:+ (job $live_jobid)} — nothing to diagnose until it runs"
+    fi ;;
 
   OOM|OOT|OOMOOT)
     category="resource:${STATE,,}"

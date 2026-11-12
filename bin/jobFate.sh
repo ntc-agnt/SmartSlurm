@@ -66,12 +66,24 @@ map_state() {
   # substrings: a NodeList/Partition/QOS name containing "cancel" or "failed" must
   # not be read as a job state. OUT_OF_MEMORY/TIMEOUT may appear on a .batch/.0
   # substep while the alloc line shows FAILED, so scan all of this job's lines.
-  if   grep -qw 'OUT_OF_MEMORY'        <<<"$1"; then echo OOM
-  elif grep -qw 'TIMEOUT'              <<<"$1"; then echo OOT
-  elif grep -qwE 'NODE_FAIL|BOOT_FAIL' <<<"$1"; then echo NODE_FAIL
-  elif grep -qw 'CANCELLED'            <<<"$1"; then echo CANCELLED
-  elif grep -qw 'FAILED'               <<<"$1"; then echo FAILED
-  elif grep -qw 'COMPLETED'            <<<"$1"; then echo COMPLETED
+  # INVARIANT: callers query `sacct -j <id>` WITHOUT -D/--duplicates, so this blob is
+  # the job's CURRENT instantiation only -- a terminal token here means it IS terminal.
+  # If a caller ever adds -D (an old terminal run could then co-occur with a live
+  # requeued one), check for a live state FIRST, or a now-running job gets mis-marked.
+  # Cover ALL of Slurm's terminal states, so a terminal-but-unmapped State is never
+  # mistaken for "no record / still live" -- which would let a dead job (DEADLINE,
+  # PREEMPTED, REVOKED, SPECIAL_EXIT) read as RUNNING on diagnose's --reconcile path
+  # when a fresh squeue cache still lists it. DEADLINE ~ time; PREEMPTED/REVOKED ~
+  # scheduler kill (retryable, not the job's fault); SPECIAL_EXIT ~ failure. A
+  # non-empty blob showing only a LIVE state (RUNNING/PENDING/...) still falls to ""
+  # -> UNRESOLVED, so the caller consults the live cache; an empty/no-record blob is
+  # handled by the callers above (resolve_single / run_batch) before map_state runs.
+  if   grep -qw 'OUT_OF_MEMORY'                          <<<"$1"; then echo OOM
+  elif grep -qwE 'TIMEOUT|DEADLINE'                      <<<"$1"; then echo OOT
+  elif grep -qwE 'NODE_FAIL|BOOT_FAIL|PREEMPTED|REVOKED' <<<"$1"; then echo NODE_FAIL
+  elif grep -qw 'CANCELLED'                              <<<"$1"; then echo CANCELLED
+  elif grep -qwE 'FAILED|SPECIAL_EXIT'                   <<<"$1"; then echo FAILED
+  elif grep -qw 'COMPLETED'                              <<<"$1"; then echo COMPLETED
   else echo ""; fi
 }
 

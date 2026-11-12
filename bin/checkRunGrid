@@ -336,6 +336,9 @@ rawrows="$(
   ' "$LOGDIR/allJobs.txt"
 )"
 
+# shared live-state classifier (single source of truth with diagnose.sh)
+. "$(dirname "$0")/liveState.sh" 2>/dev/null || true
+
 # squeue snapshot (real cluster): "<id>-R"/"<id>-P" tokens. Empty in the harness.
 # Cached (shared with checkRun's squeue_cache.txt, 120s TTL) so that repeated grid
 # redraws during navigation don't each pay a live scheduler round-trip. An explicit
@@ -368,33 +371,15 @@ job_status() {   # $1=flag  -> echoes status
     if grep -qiE 'jobStatus: Unknown|Not sure why' "$LOGDIR/$f.out" 2>/dev/null; then echo unknown; else echo error; fi
     return
   fi
-  # live scheduler truth, when available
-  local id="${ID_OF[$f]:-}"
-  if [ -n "$id" ] && [ "$_SQ_OK" = 1 ]; then
-    case "$ACTIVE" in
-      *"$id-R"*) echo running; return;;
-      *"$id-P"*) echo pending; return;;
-    esac
-  fi
-  # fallback: a job that actually started writes body output (non-comment lines)
-  # to .out; ssbatch pre-writes a #-comment preamble even for cancelled jobs, so
-  # ".out exists" is NOT "it ran".
-  if [ -e "$LOGDIR/$f.out" ] && grep -qE '^[^#[:space:]]' "$LOGDIR/$f.out" 2>/dev/null; then
-    # It started, yet it is absent from a trustworthy squeue snapshot and has no
-    # terminal flag. A genuinely running job would be in squeue (matched above), so
-    # this is a VANISHED job: hard-killed (OOM/timeout bypasses cleanUp's EXIT trap,
-    # leaving no .success/.failed). Report it as unknown (?) -- actionable, "go look"
-    # -- instead of a phantom "running". Guard with an .out mtime window so a just-
-    # started job that still lags the 120s squeue cache keeps reading as running
-    # while its output is fresh. Only decide "vanished" when squeue is trustworthy
-    # AND we have this job's id to confirm its absence.
-    if [ "$_SQ_OK" = 1 ] && [ -n "$id" ]; then
-      local age; age=$(( $(date +%s) - $(stat -c %Y "$LOGDIR/$f.out" 2>/dev/null || echo 0) ))
-      [ "$age" -ge "${RECONCILE_LIVE_SECS:-90}" ] && { echo unknown; return; }
-    fi
-    echo running; return
-  fi
-  echo pending
+  # live state via the shared classifier (liveState.sh) -- the SAME logic diagnose
+  # uses, so the grid cell and the diagnose card can never disagree. "vanished"
+  # (started, trustworthy squeue, id known & absent, .out gone stale) renders as the
+  # actionable unknown "?" ("go look"), not a phantom "running".
+  case "$(ls_state "$f" "$LOGDIR" "$ACTIVE" "$_SQ_OK" "${ID_OF[$f]:-}")" in
+    running)  echo running;;
+    pending)  echo pending;;
+    vanished) echo unknown;;
+  esac
 }
 
 jobrows=""
