@@ -514,13 +514,17 @@ _want wf_isolation && {
   # Arm 1: an ORIGINAL user workflow in wf-mode (register-don't-run), workspace A.
   ss_new_workspace "$WORK/wf_iso_orig"
   cp "$HERE"/fixtures/wf_afterok/* .; chmod +x ./*.sh 2>/dev/null || true
-  ss_wf_activate                      # sets SS_WF_MODE=1 and leaves it set
+  ss_wf_activate                      # sets SS_WF_MODE=1 (register-don't-run)
   bash ./submit.sh > wf.log 2>&1
   ss_wf_drain
   assert_file "marker.txt"            "wf arm: original afterok workflow ran"
   assert_file "fromB.txt"             "wf arm: downstream step ran"
-  # Arm 2: an rAP pipeline in a SEPARATE workspace, with SS_WF_MODE STILL set.
+  # Arm 2: an rAP pipeline in a SEPARATE workspace, with SS_WF_MODE set. The
+  # workspace boundary (ss_new_workspace) now clears steering state, so set
+  # SS_WF_MODE back EXPLICITLY here to genuinely exercise ss_run_pipeline's inline
+  # guard, rather than rely on the mode leaking across the block boundary.
   ss_new_workspace "$WORK/wf_iso_rap"
+  export SS_WF_MODE=1
   cp "$HERE"/fixtures/clean_2step/* .
   ss_run_pipeline "./pipeline.sh 777" "sbatch -p short -c 1 --mem 4G -t 50:0"; rc=$?
   assert_rc "$rc" 0 "rAP arm runs despite SS_WF_MODE being set by the wf arm"

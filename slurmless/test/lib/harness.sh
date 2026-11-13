@@ -161,6 +161,19 @@ ss_new_workspace() {
   # workspace only -- never accumulate prior blocks' workspaces (see _SS_BASE_PATH),
   # so a serial run isolates blocks exactly as a parallel (one-process-per-block) run does.
   export PATH="$dir:${_SS_BASE_PATH:-$PATH}"
+  # Block-isolation boundary for test-only STEERING state. A real
+  # one-process-per-block run (which this serial harness emulates -- see the PATH
+  # note above) would inherit NONE of these from a prior block, so clear them here
+  # rather than trust every block to clean up after itself.
+  #   SS_WF_MODE is the dangerous one: a workflow block leaves it set
+  #   (ss_wf_activate never unsets it), and while set the mock sbatch
+  #   registers-don't-run. An rAP pipeline invoked DIRECTLY -- bypassing
+  #   ss_run_pipeline's inline `SS_WF_MODE=` guard, as rerun's reissue() and the
+  #   estimator blocks' `bash runAsPipeline` do -- is then silently NOT executed,
+  #   so its .success flags never appear and the block fails late and confusingly,
+  #   only in full-suite order. The rest are reset for the same isolation reason.
+  unset SS_WF_MODE SS_MODEL smartSlurmRerun MOCK_FAIL_MODE MOCK_FAIL_JOB
+  export JR_REF_CLASS=""
 }
 
 # --- resource model selection -------------------------------------------------
