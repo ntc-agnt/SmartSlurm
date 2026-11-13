@@ -84,11 +84,14 @@ while [ $# -gt 0 ]; do
         --metric)    metric=$2; shift 2;;
         --worst)     worst=$2; shift 2;;
         --resid-cut) residCut=$2; shift 2
-                     # Must be 'auto' or a non-negative number. Without this, a non-numeric/
-                     # empty/negative value is coerced to 0 by awk, and --auto then treats
-                     # EVERY nonzero residual as an outlier and deletes legitimate rows.
-                     [[ "$residCut" == auto || "$residCut" =~ ^[0-9]+(\.[0-9]+)?$ ]] || {
-                       echo "fitQC: --resid-cut must be 'auto' or a non-negative number, got '$residCut'" >&2; exit 2; } ;;
+                     # Must be 'auto' or a POSITIVE number. A non-numeric/empty/negative value
+                     # is coerced to 0 by awk, and 0 ITSELF makes --auto treat EVERY nonzero
+                     # residual as an outlier and delete legitimate rows -- so reject 0 too.
+                     if [ "$residCut" != auto ]; then
+                       if ! [[ "$residCut" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk "BEGIN{exit !($residCut>0)}"; then
+                         echo "fitQC: --resid-cut must be 'auto' or a POSITIVE number, got '$residCut'" >&2; exit 2
+                       fi
+                     fi ;;
         --r2-below)  r2below=$2; shift 2;;
         --min-n)     minN=$2; shift 2;;
         --pipeline)  fPipe=$2; shift 2;;
@@ -205,7 +208,13 @@ engine() {
     function tcrit(df){ return (df<1||df>30)?2.0:TT[df]+0 }
     # the outlier cut for a group of G_n points: df-calibrated t when auto, else fixed.
     function groupcut(){ return (rc=="auto")? tcrit(G_n-3) : rc+0 }
-    $(col["status"])=="COMPLETED" && $(col["inputSize"])+0>0 {
+    # Accept ONLY a finite non-negative decimal. Guards against values like inf /
+    # Infinity / 1e400(overflow) / 0x10 that gawk coerces to 0 but mawk coerces to
+    # +inf -- which would silently poison the fit and flip the outlier/removal verdict
+    # between awks (and could delete legitimate rows under the default mawk). A row
+    # with a non-numeric inputSize or metric is skipped identically under both awks.
+    function isnum(x){ return (x ~ /^[0-9]+(\.[0-9]+)?$/) }
+    $(col["status"])=="COMPLETED" && isnum($(col["inputSize"])) && isnum($(col[mcol])) && $(col["inputSize"])+0>0 {
         pipe=$(col["pipeline"]); step=$(col["step"]); rg=refClass($(col["ref"]))
         key=pipe"/"step"/"rg
         if(fp!="" && index(pipe,fp)==0) next
@@ -368,19 +377,26 @@ _backup_once() {
     backupPath="$dir/jobRecord.back.$ts.txt"
     cp "$store" "$backupPath" && echo "Backed up store -> $backupPath (roll back by restoring this file)."
 }
-_prune() {   # $1=groupKey  $2=comma-separated jobIDs -> rewrite store without them
-    local key=$1 ids=$2 p rest s rg tmp
+_prune() {   # $1=groupKey  $2=comma-separated jobIDs -> remove them via the SSOT's
+             # LOCKED, atomic jobRecord rewrite (jrRewrite): it takes the same _jrLock a
+             # finishing pipeline's jrAppendLine takes and renames a SAME-DIR temp, so a
+             # concurrent pipeline write can never be clobbered and the store can't be
+             # left truncated. Returns non-zero (and changes NOTHING) if it can't lock.
+    local key=$1 ids=$2 p rest s rg prog
     p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
-    tmp=$(mktemp)
-    # store is v2 (verified); rewrite the raw file name-addressed, header kept.
-    awk -F, -v OFS=, -v p="$p" -v s="$s" -v rg="$rg" -v ids="$ids" -v refmap="$JR_REF_CLASS" '
-        BEGIN{ n=split(ids,a,","); for(i=1;i<=n;i++) R[a[i]]=1
-               m=split(refmap,M," "); for(i=1;i<=m;i++){ split(M[i],kv,"="); RM[kv[1]]=kv[2] } }
-        function refClass(r,  i){ if(r=="none"||r=="")return (r=="")?"":"none"; for(i in RM) if(i==r)return RM[i]; return r }
-        NR==1{ for(i=1;i<=NF;i++) col[$i]=i; print; next }
-        { k=$(col["pipeline"])"/"$(col["step"])"/"refClass($(col["ref"]))
-          if(k==(p"/"s"/"rg) && ($(col["jobID"]) in R)) next
-          print }' "$store" > "$tmp" && mv "$tmp" "$store"
+    # Per-data-row body for jrRewrite (header + col[] handled by jrRewrite). Drop a row
+    # only when its (pipeline, step, refGroup) matches the target AND its jobID is in the
+    # set -- so a jobID that collides in another group/pipeline is never touched. refClass
+    # is inlined to match the engine's refClass() exactly. Underscore locals avoid
+    # colliding with jrRewrite's own awk vars.
+    prog='
+      if(!_i){ _n=split(ids,_a,","); for(_k=1;_k<=_n;_k++)R[_a[_k]]=1
+               _m=split(refmap,_M," "); for(_k=1;_k<=_m;_k++){split(_M[_k],_kv,"=");RM[_kv[1]]=_kv[2]}; _i=1 }
+      _r=$(col["ref"]);
+      _rc=(_r=="")?"":((_r=="none")?"none":((_r in RM)?RM[_r]:_r));
+      if($(col["pipeline"])"/"$(col["step"])"/"_rc==tgt && ($(col["jobID"]) in R)) next;
+      print'
+    jrRewrite "$store" "$prog" -v ids="$ids" -v refmap="$JR_REF_CLASS" -v tgt="$p/$s/$rg"
 }
 
 # _auto_remove GROUP : iteratively prune the worst over-cut outlier, re-fit, repeat.
@@ -406,7 +422,10 @@ _auto_remove() {
             echo "         not auto-removing; inspect it, and if it is truly bad remove it explicitly: fitQC $grp --remove $jid"
             break
         fi
-        _prune "$grp" "$jid"
+        if ! _prune "$grp" "$jid"; then
+            echo ">>> stop: removal did not apply (could not take the jobRecord lock -- a pipeline may be writing); nothing changed" >&2
+            break
+        fi
         trail="$trail $jid(|r|=$br)"
         echo "    pass $pass: removed jobID $jid (|stud-r|=$br)"
     done
@@ -429,8 +448,11 @@ if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
 
     if [ -n "$removeIDs" ]; then
         [ "$dryRun" = 1 ] || _backup_once
-        _prune "$grp" "$removeIDs"
-        echo ">>> removed [$removeIDs] from $grp"
+        if _prune "$grp" "$removeIDs"; then
+            echo ">>> removed [$removeIDs] from $grp"
+        else
+            echo ">>> removal did NOT apply: could not take the jobRecord lock (a pipeline may be writing). Nothing changed -- retry." >&2
+        fi
     fi
 
     if [ "$autoRemove" = 1 ]; then
@@ -530,7 +552,9 @@ fitq_group() {
             q)    break;;
             qq)   QUIT=1; break;;
             p)    _clear; plot_group "$grp"; _pause;;                     # plot submenu -> back up
-            r)    shift; if [ -n "$*" ]; then _backup_once; _prune "$grp" "$(echo "$* "|tr ' ' ',')"; mutated=1; redraw=1; fi;;
+            r)    shift; if [ -n "$*" ]; then _backup_once
+                        if _prune "$grp" "$(echo "$* "|tr ' ' ',')"; then mutated=1; else echo "removal did not apply (store busy/locked)"; fi
+                        redraw=1; fi;;
             A)    _backup_once; _auto_remove "$grp"; _pause; mutated=1; redraw=1;;
             *)    ;;                                                       # ignore junk (no recompute)
         esac
