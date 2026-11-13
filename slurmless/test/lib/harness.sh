@@ -46,11 +46,17 @@ export SMARTSLURM_ROOT
 
 # v2 stats key the fit as (pipeline, step, refGroup). Pin the pipeline name used by
 # the estimator blocks to ONE value, shared by the records we write (ss_run_sweep
-# passes --pipeline) and the fits we read (ss_fit), so they land on the same stat
-# key. Without this, runAsPipeline derives the pipeline from the script name
-# ("pipeline"), while ss_fit queries the estimator's default ("unknown") -> the fit
-# input is empty and every estimator block silently fails.
-export SS_PIPELINE=unknown
+# passes --pipeline) and the fits we read (ss_fit passes the same name), so they land
+# on the same stat key. Without this, runAsPipeline derives the pipeline from the
+# script name ("pipeline") while ss_fit would query a different key -> the fit input
+# is empty and every estimator block silently fails.
+# MUST be a VALID, non-reserved name: runAsPipeline (and jrCurate) now REJECT
+# 'unknown' and 'legacy' as --pipeline values -- they are reserved jobRecord markers
+# (unknown = the estimator's standalone default; legacy = migrated jR1 rows). The
+# harness once used 'unknown' here; once the tool added that validation, --pipeline
+# unknown errored out, no jobs were recorded, and every estimator block failed at its
+# first "N COMPLETED records" assertion. Keep this a plain pipeline name.
+export SS_PIPELINE=estim
 
 # ss_activate: prepare a Slurm-free environment. It has two environment-mutating
 # side effects appropriate for a disposable sandbox or CI runner but surprising on
@@ -219,12 +225,17 @@ ss_run_sweep() {
   done
 }
 
-# ss_fit PROGRAM REF  : force estimateResource.sh to (re)build the fit from the
-#   current jobRecord.txt and echo the fitted mem.stat keys. Returns non-zero if
-#   gnuplot is unavailable. Use a size well within the observed range so the
-#   builder runs rather than returning outOfRange.
+# ss_fit PROGRAM REF [PIPELINE]  : force estimateResource.sh to (re)build the fit
+#   from the current jobRecord.txt and echo the fitted mem.stat keys. Returns non-zero
+#   if gnuplot is unavailable. Use a size well within the observed range so the builder
+#   runs rather than returning outOfRange.
+#   PIPELINE defaults to "unknown" -- the marker ss_seed_record writes and that a bare
+#   estimateResource/calculateMemTime reads, i.e. the harness's standalone default, so
+#   SEED-based callers need no argument. A caller whose history was built by ss_run_sweep
+#   (recorded via runAsPipeline --pipeline, which REJECTS "unknown") passes $SS_PIPELINE
+#   explicitly, so the fit lands on the same stat key those swept rows carry.
 ss_fit() {
-  local prog="$1" ref="${2:-none}"
+  local prog="$1" ref="${2:-none}" pipe="${3:-unknown}"
   command -v gnuplot >/dev/null 2>&1 || { echo "gnuplot-missing"; return 2; }
   # pick a mid-range size from the existing records to avoid the outOfRange guard
   local mid
@@ -235,13 +246,14 @@ ss_fit() {
   # Force a fresh fit from ALL current records: estimateResource.sh otherwise
   # reuses a <2-min-old stat file (staleness guard), which during a fast sweep
   # can be an early, few-point fit. Removing it makes the builder re-run.
-  # ss_fit invokes estimateResource WITHOUT --pipeline, so the key is unknown.PROG.REF
-  # (JR_REF_CLASS="" in the harness => refGroup==ref); the fallback ladder pools the
-  # actual history (seeded as pipeline=unknown, or swept under another pipeline).
-  rm -f "$smartSlurmJobRecordDir/stats/unknown.$prog.$ref.mem.stat" \
-        "$smartSlurmJobRecordDir/stats/unknown.$prog.$ref.time.stat"
-  estimateResource.sh "$prog" "$ref" ",jobSize:$mid" fitflag 4096 120 >/dev/null 2>&1
-  cat "$smartSlurmJobRecordDir/stats/unknown.$prog.$ref.mem.stat" 2>/dev/null
+  # ss_fit estimates under $SS_PIPELINE -- the SAME name ss_run_sweep recorded the
+  # rows under -- so the record and fit sides share the stat key $SS_PIPELINE.PROG.REF
+  # (JR_REF_CLASS="" in the harness => refGroup==ref). The pipeline name is passed as
+  # the 8th positional arg, exactly as ssbatch calls estimateResource in production.
+  rm -f "$smartSlurmJobRecordDir/stats/$pipe.$prog.$ref.mem.stat" \
+        "$smartSlurmJobRecordDir/stats/$pipe.$prog.$ref.time.stat"
+  estimateResource.sh "$prog" "$ref" ",jobSize:$mid" fitflag 4096 120 "" "$pipe" >/dev/null 2>&1
+  cat "$smartSlurmJobRecordDir/stats/$pipe.$prog.$ref.mem.stat" 2>/dev/null
 }
 
 # ss_firstpass_rate PROGRAM REF MODEL PCT DIM PATH "sizes" "seeds"
