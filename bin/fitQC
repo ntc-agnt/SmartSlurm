@@ -233,7 +233,8 @@ engine() {
         nw=split(want,W," "); for(i=1;i<=nw;i++) WANT[W[i]]=1
         if(P==""||P+0<=0) P=93           # coverage target percentile (estimator targetFirstPassPct)
         FLR=(mcol=="memUsed"?100:10)      # estimate floor (M / min), mirrors calculateMemTime
-        RULE="────────────────────────────────────────────────"   # pipeline-header rule (display only)
+        RULE="──────────────────────────"   # short pipeline-header rule (display only)
+        UNIT=(mcol=="memUsed")?"M":"min"      # recovery/estimate unit for the action column
     }
     # -------- the estimator model, mirrored (estimateResource + calculateMemTime) --
     # pctl: p-th percentile (value) of arr[1..mm], ceil index like the estimator awk.
@@ -311,7 +312,7 @@ engine() {
         t=SCOV[a];SCOV[a]=SCOV[b];SCOV[b]=t; t=SWASTE[a];SWASTE[a]=SWASTE[b];SWASTE[b]=t
         t=SBREC[a];SBREC[a]=SBREC[b];SBREC[b]=t; t=SBJ[a];SBJ[a]=SBJ[b];SBJ[b]=t
         t=SNOTE[a];SNOTE[a]=SNOTE[b];SNOTE[b]=t; t=SUNDER[a];SUNDER[a]=SUNDER[b];SUNDER[b]=t
-        t=SINFL[a];SINFL[a]=SINFL[b];SINFL[b]=t
+        t=SINFL[a];SINFL[a]=SINFL[b];SINFL[b]=t; t=SACT[a];SACT[a]=SACT[b];SACT[b]=t
     }
     # Accept ONLY a finite non-negative decimal. Guards against values like inf /
     # Infinity / 1e400(overflow) / 0x10 that gawk coerces to 0 but mawk coerces to
@@ -383,10 +384,15 @@ engine() {
                 vis=(showAll || underc || overa || inflF)
                 if(!vis) continue
                 m++
-                if(underc)hasUnder=1; if(overa)hasOver=1; if(inflF)hasInfl=1
                 SKEY[m]=key; Sn[m]=cnt[key]; SNS[m]=gNS; SMODEL[m]=C_model
                 SCOV[m]=C_cov; SWASTE[m]=C_waste; SBREC[m]=C_brec; SBJ[m]=C_bj
                 SNOTE[m]=note; SUNDER[m]=(underc?1:0); SINFL[m]=(inflF?1:0)
+                # one terse action per group (OOM risk first); the last column, so no pad needed
+                if(thin)        SACT[m]="thin"
+                else if(underc) SACT[m]="under-covers -> fix model"
+                else if(inflF)  SACT[m]="--auto  ~" int(C_brec) UNIT
+                else if(overa)  SACT[m]="over-reserved"
+                else            SACT[m]="-"
             }
             if(m==0){ if(mode=="triage") print "All groups look healthy (coverage >= p"P", no over-allocation or inflating outliers; use --all to list them)."; exit 0 }
             # worst-first: UNDER-COVER (OOM risk) first, then recoverable influence, then waste
@@ -412,20 +418,15 @@ engine() {
                     split(SKEY[a],KK,"/"); pp=KK[1]; step=KK[2]; rgs=KK[3]
                     if(pp!=curp){ curp=pp
                         printf "\n%s %s\n", pp, RULE
-                        if(shown==0) printf "  #   %-16s %-12s %4s %4s %5s %6s %6s  %-14s %s\n","step","ref","n","nSz","model","cover%","waste%","infl job:Mrec","note"
+                        if(shown==0) printf "  #   %-16s %-12s %6s %6s  %s\n","step","ref","cover","waste","action"
                     }
                     shown++
                     hot=(SUNDER[a]||SINFL[a])
-                    infl=(SINFL[a]? SBJ[a]":"int(SBREC[a]) : "-")
-                    printf "%s%3d   %-16s %-12s %4d %4d %5s %6.1f %6.1f  %-14s %s%s\n",(hot?red:""),r,step,reftail(rgs),Sn[a],SNS[a],SMODEL[a],SCOV[a],SWASTE[a],infl,SNOTE[a],(hot?off:"")
+                    printf "%s%3d   %-16s %-12s %5d%% %5d%%  %s%s\n",(hot?red:""),r,step,reftail(rgs),int(SCOV[a]),int(SWASTE[a]),SACT[a],(hot?off:"")
                 }
-                print ""
-                print "what to do:"
-                if(hasInfl)  print "  infl         over-reserving from an outlier row -> fitQC <#> --auto   (removes it; store backed up, then re-fits; future "mcol" estimates drop ~the M shown; coverage stays >= p"P")"
-                if(hasOver)  print "  over-alloc   >=50% reserved above actual use, no single removable row -> inspect fitQC <#>; if it mixes workloads see merged-steps, else the spread is inherent and the margin covers it"
-                if(hasUnder) print "  UNDER-COVER  estimate misses >"(100-P)"% of past jobs (OOM risk); NOT fixable by removing rows -> the model under-predicts, it needs more margin / a model fix"
-                print "cols: model=LINE(size-scaled)|CONST(flat p"P")   cover%=past jobs the estimate would hold (target p"P")   waste%=reservation left unused   infl=job:M recoverable"
-                print "inspect a group: fitQC <#>   |   every group incl. healthy/thin: fitQC --all   |   preview a removal: fitQC <#> --auto --dry-run"
+                # one-line footer: scope + the two commands that matter. Full legend is in -h.
+                if(showAll) printf "\n%d group%s shown · metric=%s · coverage target p%d   —   fitQC <#> to inspect · fitQC <#> --auto to fix · -h for help\n",m,(m==1?"":"s"),mcol,P
+                else        printf "\n%d flagged (of %d) · metric=%s · target p%d   —   fitQC <#> to inspect · fitQC <#> --auto to fix · --all for all · -h for help\n",m,nk,mcol,P
             }
         } else if(mode=="emit"){
             # per-row estimation influence for the wanted group(s); drives --auto:
