@@ -2373,14 +2373,18 @@ _want fitqc && {
   }
   seed_store
 
+  # The triage view groups by pipeline (headers + row numbers), so parse the stable
+  # machine view --tsv instead of the human table: one line per group, tab-separated
+  #   key \t n \t R2 \t STDFIT \t #out \t worst \t note
+
   # 1) triage flags the outlier group (one point over the cut)
-  nout=$("$FITQC" --store "$jr" | awk '$1=="p1/bowtie/none"{print $5}')
+  nout=$("$FITQC" --store "$jr" --tsv | awk -F'\t' '$1=="p1/bowtie/none"{print $5}')
   { [ -n "$nout" ] && [ "$nout" -ge 1 ]; } \
     && _pass "triage flags p1/bowtie/none as having an outlier (#out=$nout)" \
     || _fail "triage flags the outlier group" "#out=${nout:-<none>}"
 
   # 2) cross-pipeline isolation: p1 and p2 bowtie are SEPARATE groups
-  ngrp=$("$FITQC" --store "$jr" --all | grep -cE '^(p1|p2)/bowtie/none ')
+  ngrp=$("$FITQC" --store "$jr" --all --tsv | awk -F'\t' '$1=="p1/bowtie/none"||$1=="p2/bowtie/none"' | grep -c .)
   [ "${ngrp:-0}" -eq 2 ] \
     && _pass "same tool in two pipelines -> two separate groups (no cross-contamination)" \
     || _fail "cross-pipeline isolation" "matched $ngrp group rows, expected 2"
@@ -2391,7 +2395,7 @@ _want fitqc && {
     || _fail "detail ranks the outlier worst" "top row jobID=$first"
 
   # 4) thin group (n=2) reported thin, never fit
-  "$FITQC" --store "$jr" --all | awk '$1=="p1/star/none"{print $7}' | grep -q thin \
+  "$FITQC" --store "$jr" --all --tsv | awk -F'\t' '$1=="p1/star/none"{print $7}' | grep -q thin \
     && _pass "thin group (n=2) reported thin, not fit" || _fail "thin group reported thin"
 
   # 5) --dry-run --remove is a no-op on the real store
@@ -2448,9 +2452,9 @@ _want fitqc && {
     printf 'pM,cut,none,,612,200,250,300,6,30,1,COMPLETED,u,n,%s,d,1.0.cut.b\n' "$ep"
     printf 'pM,cut,none,,613,300,360,400,7,30,1,COMPLETED,u,n,%s,d,1.0.cut.c\n' "$ep"
   } > "$jr"
-  tri=$("$FITQC" --store "$jr" --all)
-  merged_note=$(echo "$tri" | awk '$1=="pM/bowtie/none"{print $NF}')
-  single_note=$(echo "$tri" | awk '$1=="pM/cut/none"{print $NF}')
+  tri=$("$FITQC" --store "$jr" --all --tsv)
+  merged_note=$(echo "$tri" | awk -F'\t' '$1=="pM/bowtie/none"{print $7}')
+  single_note=$(echo "$tri" | awk -F'\t' '$1=="pM/cut/none"{print $7}')
   det=$("$FITQC" --store "$jr" pM/bowtie/none)
   if echo "$merged_note" | grep -q 'steps:2,3' \
      && [ "$single_note" = "-" ] \
@@ -2472,14 +2476,27 @@ _want fitqc && {
     printf 'pR,clean,none,,812,200,500,600,12,60,4,COMPLETED,u,n,%s,d,1.0.clean.b\n' "$ep"
     printf 'pR,clean,none,,813,300,700,800,14,60,4,COMPLETED,u,n,%s,d,1.0.clean.c\n' "$ep"
   } > "$jr"
-  tri=$("$FITQC" --store "$jr")          # default triage (no --all)
-  aln=$(echo "$tri" | awk '$1=="pR/aln/none"')
-  aln_out=$(echo "$aln" | awk '{print $5}')
-  aln_note=$(echo "$aln" | awk '{print $NF}')
-  clean_shown=$(echo "$tri" | grep -c '^pR/clean/none ')
+  tri=$("$FITQC" --store "$jr" --tsv)    # default triage (no --all), machine view
+  aln=$(echo "$tri" | awk -F'\t' '$1=="pR/aln/none"')
+  aln_out=$(echo "$aln" | awk -F'\t' '{print $5}')
+  aln_note=$(echo "$aln" | awk -F'\t' '{print $7}')
+  clean_shown=$(echo "$tri" | awk -F'\t' '$1=="pR/clean/none"' | grep -c .)
   if echo "$aln_note" | grep -q 'low-R2' && [ "${aln_out:-x}" = 0 ] && [ "$clean_shown" -eq 0 ]; then
     _pass "low-R2 group surfaced by default (no over-cut outlier); clean group stays hidden"
   else _fail "low-R2 surfacing" "aln=[$aln] cleanShown=$clean_shown"; fi
+
+  # 11) grouped human view: pipeline headers + numbered rows, and row-number selection
+  #     resolves to the SAME group as the full key (the numbered table is usable).
+  seed_store
+  human=$("$FITQC" --store "$jr" --all --no-color)
+  # find the row # in the DEFAULT view (same filter 'fitQC <#>' resolves against)
+  row=$("$FITQC" --store "$jr" --tsv | awk -F'\t' '$1=="p1/bowtie/none"{print NR; exit}')
+  by_num=$("$FITQC" --store "$jr" "$row" --no-color | awk 'NR==1')
+  if echo "$human" | grep -qE '^p1 ' \
+     && echo "$human" | grep -qE '^ +[0-9]+ +bowtie ' \
+     && [ "$by_num" = "== p1/bowtie/none ==" ]; then
+    _pass "triage groups by pipeline (headers + numbers); 'fitQC <#>' selects that group"
+  else _fail "grouped view + number selection" "row=$row by_num=[$by_num]"; fi
 
   echo
   fi

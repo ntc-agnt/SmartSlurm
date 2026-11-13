@@ -27,8 +27,8 @@ $self -- jobRecord regression QC (assess fits, rank outliers)
 
   $self -i                      interactive browser (checkRun-style: pick a group,
                                 inspect, plot, remove; q/qq to go up/quit)
-  $self                         triage: one line per group, worst first
-  $self PIPE/STEP/REF ...       detail for one or more groups
+  $self                         triage: groups by pipeline, worst first, numbered
+  $self PIPE/STEP/REF ... | N   detail for one or more groups (by key or row #)
   $self --pipeline P --step S --ref R   detail by explicit fields
   $self PIPE/STEP/REF --remove 1004,1009   drop those jobIDs, re-fit
   $self PIPE/STEP/REF --auto    iteratively remove worst outliers, re-fit
@@ -47,6 +47,8 @@ Options:
   --step S         restrict to step S (substring)
   --ref R          restrict to ref/refGroup R (substring)
   --all            triage: also show healthy groups (hidden by default)
+  --tsv            triage: machine-readable, one line per group, full key +
+                   stats tab-separated (key, n, R2, STDFIT, #out, worst, note)
   --plot           detail: add a gnuplot scatter + fit line above the table
   --gfx MODE       plot backend: dumb (ASCII, universal), sixel or kitty (true
                    raster line, needs a capable terminal). Default: auto (kitty if
@@ -76,7 +78,7 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 # --- args ------------------------------------------------------------------
 store=""; metric="mem"; worst=0; residCut=auto; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
-removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0; gfx=auto
+removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0; gfx=auto; tsv=0
 groups=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -98,6 +100,7 @@ while [ $# -gt 0 ]; do
         --step|--program) fStep=$2; shift 2;;
         --ref)       fRef=$2; shift 2;;
         --all)       showAll=1; shift;;
+        --tsv)       tsv=1; shift;;
         --plot)      doPlot=1; shift;;
         --gfx)       gfx=$2; shift 2;;
         --no-color)  useColor=off; shift;;
@@ -162,18 +165,6 @@ if [ "$(jrSchemaVersion "$store")" != 2 ]; then
     exit 1
 fi
 
-# Normalize any PIPE/STEP/REF group selectors: map the ref component through
-# jrRefClass so a user can type the raw ref (hg38) or the pooled group (mammal).
-wantKeys=""
-for g in "${groups[@]:-}"; do
-    [ -z "$g" ] && continue
-    p=${g%%/*}; rest=${g#*/}; s=${rest%%/*}; r=${rest#*/}
-    [ "$r" = "$rest" ] && r=""        # only two components given -> no ref
-    rg=$(jrRefClass "$r")
-    wantKeys="$wantKeys $p/$s/$rg"
-done
-wantKeys="${wantKeys# }"
-
 metricCol=memUsed; [ "$metric" = time ] && metricCol=timeUsed
 
 # --- the engine: one awk pass builds per-group points, then fits + diagnoses.
@@ -204,6 +195,7 @@ engine() {
         # cut when rc=="auto", so a small group needs a bigger deleted residual to
         # flag (df = n-p-1). df<1 or >30 -> 2.0.
         ntt=split("12.71 4.30 3.18 2.78 2.57 2.45 2.36 2.31 2.26 2.23 2.20 2.18 2.16 2.14 2.13 2.12 2.11 2.10 2.09 2.09 2.08 2.07 2.07 2.06 2.06 2.06 2.05 2.05 2.05 2.04",TT," ")
+        RULE="────────────────────────────────────────────────"   # pipeline-header rule (display only)
     }
     function tcrit(df){ return (df<1||df>30)?2.0:TT[df]+0 }
     # the outlier cut for a group of G_n points: df-calibrated t when auto, else fixed.
@@ -267,6 +259,18 @@ engine() {
         D_cook=(G_s>0 && h<1)? (e*e/(2*G_s*G_s))*(h/((1-h)*(1-h))) : 0
     }
     function abss(v){ return v<0?-v:v }
+    # reftail(rg): compact a dash-flattened reference PATH to its genome tail for
+    # display -- the trailing dash-components that fit in 12 chars (e.g.
+    # ...-indexes-dm6-dm6 -> "dm6-dm6", ...-STAR273a-hg38_50 -> "hg38_50"). "none"/""
+    # stay "none"; a single over-long component is left-trimmed with "..". DISPLAY
+    # ONLY -- the full key is what triage/tsv emit and what selection resolves.
+    function reftail(rg,   a,n,i,out,seg){
+        if(rg=="none"||rg=="") return "none"
+        n=split(rg,a,"-"); out=a[n]
+        for(i=n-1;i>=1;i--){ seg=a[i]"-"out; if(length(seg)<=12) out=seg; else break }
+        if(length(out)>12) out=".." substr(out,length(out)-9)
+        return out
+    }
     # sort a comma list of step numbers ascending, for stable display
     function sortednums(csv,   a,n,i,j,t,out){
         n=split(csv,a,","); for(i=1;i<=n;i++)for(j=i+1;j<=n;j++) if(a[j]+0<a[i]+0){t=a[i];a[i]=a[j];a[j]=t}
@@ -274,7 +278,7 @@ engine() {
     }
     END{
         if(nk==0){ print "No COMPLETED rows match." > "/dev/stderr"; exit 0 }
-        if(mode=="triage"){
+        if(mode=="triage"||mode=="tsv"){
             # build a sortable summary line per group
             m=0
             for(k=1;k<=nk;k++){
@@ -300,7 +304,7 @@ engine() {
                 SKEY[m]=key; Sn[m]=G_n; Sr2[m]=G_r2; Sstd[m]=G_s; Sout[m]=nout; Sworst[m]=worstr; Snote[m]=note
                 Skeyrank[m]=(G_n<minN? -1 : nout)   # thin sinks to bottom via -1
             }
-            if(m==0){ print "All groups look healthy (no outliers, low-R2 fits, merged steps, or thin groups; use --all to list them)."; exit 0 }
+            if(m==0){ if(mode=="triage") print "All groups look healthy (no outliers, low-R2 fits, merged steps, or thin groups; use --all to list them)."; exit 0 }
             # sort worst-first: by #outliers desc, then worst|r| desc
             for(a=1;a<=m;a++)for(b=a+1;b<=m;b++){
                 if(Skeyrank[b]>Skeyrank[a] || (Skeyrank[b]==Skeyrank[a] && Sworst[b]>Sworst[a])) {
@@ -311,12 +315,35 @@ engine() {
                     t=Snote[a];Snote[a]=Snote[b];Snote[b]=t; t=Skeyrank[a];Skeyrank[a]=Skeyrank[b];Skeyrank[b]=t
                 }
             }
-            printf "%-34s %4s %7s %9s %5s %7s  %s\n","GROUP (pipeline/step/refGroup)","n","R2","STDFIT","#out","worst|r|","note"
-            lim=(worst+0>0)?worst+0:m
-            for(a=1;a<=m && a<=lim;a++)
-                printf "%s%-34s %4d %7.3f %9.1f %5d %7.2f  %s%s\n",(Sout[a]>0?red:""),SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a],(Sout[a]>0?off:"")
-            print ""
-            print "metric="mcol"  outlier cut "(rc=="auto"?"t.975 by df (deleted residual)":"|r|>"rc"")"  low-R2 floor "(r2below!=""?r2below+0:0.80)"  (detail: fitQC pipeline/step/refGroup)"
+            # Group the worst-first list by pipeline (contiguous blocks). Pipeline
+            # display order = order of first appearance in the worst-first sort, so the
+            # pipeline with the most-actionable group leads; within a pipeline the
+            # worst-first order is preserved. ORDER[] is the final row order; the SAME
+            # order drives the numbered human view and the tsv/selection list, so a row
+            # number maps to exactly one group.
+            np=0
+            for(a=1;a<=m;a++){ pp=SKEY[a]; sub(/\/.*/,"",pp); if(!(pp in _ps)){ _ps[pp]=1; PORD[++np]=pp } }
+            ro=0
+            for(pi=1;pi<=np;pi++){ pp=PORD[pi]
+                for(a=1;a<=m;a++){ q=SKEY[a]; sub(/\/.*/,"",q); if(q==pp) ORDER[++ro]=a } }
+            lim=(worst+0>0)?worst+0:ro
+            if(mode=="tsv"){
+                for(r=1;r<=ro && r<=lim;r++){ a=ORDER[r]
+                    printf "%s\t%d\t%.3f\t%.1f\t%d\t%.2f\t%s\n",SKEY[a],Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a] }
+            } else {
+                curp=""; shown=0
+                for(r=1;r<=ro && r<=lim;r++){ a=ORDER[r]
+                    split(SKEY[a],KK,"/"); pp=KK[1]; step=KK[2]; rgs=KK[3]
+                    if(pp!=curp){ curp=pp
+                        printf "\n%s %s\n", pp, RULE
+                        if(shown==0) printf "  #   %-16s %-12s %4s %6s %8s %4s %6s  %s\n","step","ref","n","R2","STDFIT","#out","worst","note"
+                    }
+                    shown++
+                    printf "%s%3d   %-16s %-12s %4d %6.3f %8.1f %4d %6.2f  %s%s\n",(Sout[a]>0?red:""),r,step,reftail(rgs),Sn[a],Sr2[a],Sstd[a],Sout[a],Sworst[a],Snote[a],(Sout[a]>0?off:"")
+                }
+                print ""
+                printf "metric=%s  outlier cut %s  low-R2 floor %s  (detail: fitQC <#> or pipeline/step/refGroup)\n",mcol,(rc=="auto"?"t.975 by df (deleted residual)":"|r|>" rc),(r2below!=""?r2below+0:0.80)
+            }
         } else if(mode=="emit"){
             # machine-readable per-point diagnostics for the wanted group(s):
             # key jobID x y resid studr leverage cookD n r2 stdfit (tab-separated)
@@ -443,6 +470,32 @@ _auto_remove() {
     done
     [ -n "$trail" ] && echo ">>> removed:$trail"
 }
+
+# Normalize any PIPE/STEP/REF group selectors: map the ref component through
+# jrRefClass so a user can type the raw ref (hg38) or the pooled group (mammal).
+# A bare integer is a ROW NUMBER from the numbered triage list: resolve it to its
+# full key via the tsv order (same order the table is numbered in). The tsv list
+# follows the current filters/--all, so numbers match what the user just saw.
+# (Placed after engine()/helpers are defined, since numeric resolution calls engine.)
+wantKeys=""
+_ordLoaded=0; _ord=()
+for g in "${groups[@]:-}"; do
+    [ -z "$g" ] && continue
+    if [[ "$g" =~ ^[0-9]+$ ]]; then
+        if [ "$_ordLoaded" = 0 ]; then mapfile -t _ord < <(engine tsv "" | cut -f1); _ordLoaded=1; fi
+        if [ "$g" -ge 1 ] && [ -n "${_ord[$((g-1))]:-}" ]; then
+            wantKeys="$wantKeys ${_ord[$((g-1))]}"
+        else
+            echo "$self: no group #$g in the triage list (run fitQC with no args to see the numbers)" >&2; exit 1
+        fi
+        continue
+    fi
+    p=${g%%/*}; rest=${g#*/}; s=${rest%%/*}; r=${rest#*/}
+    [ "$r" = "$rest" ] && r=""        # only two components given -> no ref
+    rg=$(jrRefClass "$r")
+    wantKeys="$wantKeys $p/$s/$rg"
+done
+wantKeys="${wantKeys# }"
 
 # --- dispatch --------------------------------------------------------------
 if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
@@ -587,23 +640,15 @@ fitq_interactive() {
     local -a keys
     while [ "$QUIT" = 0 ]; do
         if [ "$dirty" = 1 ]; then
+            # The engine triage is already grouped + numbered; the tsv list is the
+            # SAME order, so displayed row N maps to keys[N-1]. No re-numbering here.
             triage=$(engine triage "")
-            # strip ANSI before parsing keys: a red (outlier) row would otherwise
-            # carry an escape prefix on $1 and never match on the detail lookup.
-            mapfile -t keys < <(printf '%s\n' "$triage" | sed 's/\x1b\[[0-9;]*m//g' | awk '$1 ~ /\//{print $1}')
+            mapfile -t keys < <(engine tsv "" | cut -f1)
             dirty=0
         fi
         _clear
-        printf 'fitQC  —  %s\n\n' "$store"
-        # number the group rows and give the index its own "#" header, aligned to
-        # the "%3d) " row prefix (both 5 cols) so every column lines up. The footer
-        # legend is moved below the list; the all-healthy message still prints.
-        printf '%s\n' "$triage" | awk '
-            /^GROUP/   { printf "  #  %s\n", $0; next }
-            $1 ~ /\//  { printf "%3d) %s\n", ++i, $0; next }
-            /^metric=/ { foot=$0; next }
-            NF         { print }
-            END        { if(foot!="") printf "\n     %s\n", foot }'
+        printf 'fitQC  —  %s\n' "$store"
+        printf '%s\n' "$triage"
         echo
         echo "<#> inspect group   ·   a = all/actionable   ·   r = refresh   ·   q = quit"
         read -rp "> " tok </dev/tty || break
@@ -633,6 +678,8 @@ if [ ${#groups[@]} -gt 0 ]; then
     else
         engine detail "$wantKeys"
     fi
+elif [ "$tsv" = 1 ]; then
+    engine tsv ""
 else
     engine triage ""
 fi
