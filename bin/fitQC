@@ -75,8 +75,31 @@ Options:
   --dry-run        preview --remove/--auto on a scratch copy; write nothing
   -h, --help       this help
 
-Removal always backs the store up first (jobRecord.back.<ts>.txt) and is scoped to
-the named group, so a jobID colliding in another group is never touched.
+How to read the triage (one row per pipeline/step/refGroup; only flagged groups
+show by default -- the rest estimate fine; add --all to see them):
+  model    LINE = estimate scales with input size;  CONST = flat p${targetPct} of usage
+  cover%   share of past jobs the estimate would have held (target p${targetPct});
+           below it => the estimate is too low for some jobs = OOM risk
+  waste%   median reservation left unused = over-allocation
+  infl     job:M  -- one row whose removal recovers ~M of allocation, coverage-safe
+  note     UNDER-COVER (OOM risk) | over-alloc (waste) | infl (removable) |
+           thin (too few sizes to fit) | merged-steps (two steps fit as one)
+
+How to act on each flag:
+  infl / over-alloc with an infl row  ->  fitQC <#> --auto      (remove inflating row(s))
+  UNDER-COVER                         ->  model under-predicts; do NOT remove rows --
+                                          it needs more margin / a model fix
+  thin                                ->  nothing here; the estimator pools cross-pipeline
+  merged-steps                        ->  give the steps distinct names if they differ
+  always inspect first:  fitQC <#>    (ranks rows by influence: INFL vs LOAD-BEARING)
+
+Consequences of --remove / --auto:
+  Rows are DELETED from the jobRecord store (backed up to jobRecord.back.<ts>.txt
+  first) and only from the named group, then the fit is recomputed. This changes the
+  estimate the scheduler uses for FUTURE jobs in that group -- removing inflaters
+  gives a tighter reservation (less waste); it never touches running jobs. --auto
+  only removes rows that keep coverage >= p${targetPct}, so it cuts waste without
+  adding OOM risk. Preview any removal with --dry-run (writes nothing).
 EOF
     exit "${1:-0}"
 }
@@ -87,6 +110,9 @@ _bindir=$(cd "$(dirname "$0")" && pwd)
 . "$_bindir/jobRecordSchema.sh" 2>/dev/null || { echo "$self: cannot source jobRecordSchema.sh" >&2; exit 1; }
 
 # --- args ------------------------------------------------------------------
+# targetPct is referenced by usage() (which can fire on -h DURING arg parsing), so set
+# it before the loop; floorAbs depends on the parsed --metric so it is set afterwards.
+targetPct="${targetFirstPassPct:-93}"
 store=""; metric="mem"; worst=0; residCut=auto; r2below=""; minN=3
 fPipe=""; fStep=""; fRef=""; showAll=0; doPlot=0
 removeIDs=""; autoRemove=0; maxRemove=5; dryRun=0; useColor=auto; interactive=0; gfx=auto; tsv=0
@@ -180,7 +206,6 @@ metricCol=memUsed; [ "$metric" = time ] && metricCol=timeUsed
 # Coverage target = the estimator's first-pass percentile (calculateMemTime's
 # targetFirstPassPct, default 93). Estimate floor mirrors calculateMemTime (100 M /
 # 10 min). Both feed the QC so fitQC grades the SAME allocation the estimator submits.
-targetPct="${targetFirstPassPct:-93}"
 floorAbs=100; [ "$metric" = time ] && floorAbs=10
 
 # --- the engine: one awk pass builds per-group points, then fits + diagnoses.
@@ -341,7 +366,10 @@ engine() {
             for(k=1;k<=nk;k++){ key=KEYS[k]
                 computeGroup(key)
                 thin=(gNS<minN)
-                underc=(C_cov<P); overa=(C_waste>=50)
+                # A thin group has too few distinct sizes for reliable coverage/waste,
+                # and the estimator pools it across pipelines anyway -- so never call it
+                # actionable. It appears only under --all, labelled thin.
+                underc=(!thin && C_cov<P); overa=(!thin && C_waste>=50)
                 inflF=(!thin && C_brec>=0.10*C_typ && C_brec>=FLR)
                 note=""
                 if(thin) note="thin"
@@ -355,6 +383,7 @@ engine() {
                 vis=(showAll || underc || overa || inflF)
                 if(!vis) continue
                 m++
+                if(underc)hasUnder=1; if(overa)hasOver=1; if(inflF)hasInfl=1
                 SKEY[m]=key; Sn[m]=cnt[key]; SNS[m]=gNS; SMODEL[m]=C_model
                 SCOV[m]=C_cov; SWASTE[m]=C_waste; SBREC[m]=C_brec; SBJ[m]=C_bj
                 SNOTE[m]=note; SUNDER[m]=(underc?1:0); SINFL[m]=(inflF?1:0)
@@ -391,7 +420,12 @@ engine() {
                     printf "%s%3d   %-16s %-12s %4d %4d %5s %6.1f %6.1f  %-14s %s%s\n",(hot?red:""),r,step,reftail(rgs),Sn[a],SNS[a],SMODEL[a],SCOV[a],SWASTE[a],infl,SNOTE[a],(hot?off:"")
                 }
                 print ""
-                printf "metric=%s  coverage target=p%d   LINE=size-scaled fit  CONST=flat p%d of usage   (UNDER-COVER=OOM risk, over-alloc=waste, infl=removable)   detail: fitQC <#> or pipeline/step/refGroup\n",mcol,P,P
+                print "what to do:"
+                if(hasInfl)  print "  infl         over-reserving from an outlier row -> fitQC <#> --auto   (removes it; store backed up, then re-fits; future "mcol" estimates drop ~the M shown; coverage stays >= p"P")"
+                if(hasOver)  print "  over-alloc   >=50% reserved above actual use, no single removable row -> inspect fitQC <#>; if it mixes workloads see merged-steps, else the spread is inherent and the margin covers it"
+                if(hasUnder) print "  UNDER-COVER  estimate misses >"(100-P)"% of past jobs (OOM risk); NOT fixable by removing rows -> the model under-predicts, it needs more margin / a model fix"
+                print "cols: model=LINE(size-scaled)|CONST(flat p"P")   cover%=past jobs the estimate would hold (target p"P")   waste%=reservation left unused   infl=job:M recoverable"
+                print "inspect a group: fitQC <#>   |   every group incl. healthy/thin: fitQC --all   |   preview a removal: fitQC <#> --auto --dry-run"
             }
         } else if(mode=="emit"){
             # per-row estimation influence for the wanted group(s); drives --auto:
@@ -415,6 +449,7 @@ engine() {
                 printf "   coverage: %.1f%% of %d jobs <= estimate (target p%d)    median waste: %.1f%%\n",C_cov,cnt[key],P,C_waste
                 if(snc[key]>=2) printf "   WARNING: this group regresses %d rAP steps together (steps %s) -- same step name + ref.\n            If they are different workloads, give them distinct step names so they fit separately; otherwise ignore.\n",snc[key],sortednums(snlist[key])
                 if(gNS<minN) printf "   thin: only %d distinct input size%s (< %d) -- the estimator pools across pipelines here; per-group QC is unreliable.\n",gNS,(gNS==1?"":"s"),minN
+                dHasInfl=0
                 for(i=1;i<=cnt[key];i++) DI[i]=i
                 for(a=1;a<=cnt[key];a++)for(b=a+1;b<=cnt[key];b++) if(RREC[DI[b]]>RREC[DI[a]]){ tt=DI[a];DI[a]=DI[b];DI[b]=tt }
                 printf "   %-12s %12s %12s %12s %10s %4s %10s  %s\n","jobID","inputSize",mcol,"est@size","resid","env","Mrec","flag"
@@ -423,7 +458,7 @@ engine() {
                 for(a=1;a<=cnt[key] && shown<lim;a++){ i=DI[a]
                     e=estv(X[key,i]); rsd=Y[key,i]-central(X[key,i])
                     fl="-"
-                    if(RREC[i]>=FLR && RCOV[i]>=P) fl="INFL"
+                    if(RREC[i]>=FLR && RCOV[i]>=P){ fl="INFL"; dHasInfl=1 }
                     else if(RCOV[i]<P) fl="LOAD-BEARING"
                     hot=(fl=="INFL")
                     printf "%s   %-12s %12d %12d %12d %10.0f %4s %10d  %s%s\n",(hot?red:""),JOB[key,i],X[key,i],Y[key,i],int(e),rsd,(RENV[i]?"yes":"-"),int(RREC[i]),fl,(hot?off:"")
@@ -431,6 +466,10 @@ engine() {
                 }
                 clean=cnt[key]-shown; if(clean>0) printf "   (%d more row%s not shown)\n",clean,(clean==1?"":"s")
                 print "   flag: INFL=removing recovers allocation, coverage stays >=p"P" (safe to remove)   LOAD-BEARING=removing drops coverage below p"P" (keep)"
+                if(gNS<minN)      print "   Action: none here -- thin group; the estimator pools it across pipelines, so per-group QC is unreliable."
+                else if(dHasInfl) print "   Action: fitQC "key" --auto   removes the INFL row(s) (store backed up, then re-fits); future "mcol" estimates for this group drop, coverage stays >= p"P". Preview with --dry-run."
+                else if(C_cov<P)  print "   Action: none by removal -- every row is load-bearing (removing one raises OOM risk). The model under-predicts; it needs more margin or a different model, not fewer rows."
+                else              print "   Action: none -- the estimate covers >= p"P" and no single row inflates it."
                 print ""
             }
         }
