@@ -111,6 +111,27 @@ head -1 "$jr4" | grep -q '^pipeline,step,ref,sample,jobID,' || miss="$miss heade
 if [ -z "$miss" ]; then echo "GUARD4 ok: removal conserved originals + the concurrent jrAppendLine row; header intact."
 else echo "GUARD4 FAIL:$miss"; fail=1; fi
 
+# ---------------------------------------------------------------------------
+# GUARD 5 (C1): a --remove that matches NOTHING must NOT claim success. An absent
+# id, or an id that exists only in another pipeline/group, must report "nothing
+# removed" -- never ">>> removed [..]" (contract: never report removed when nothing was).
+# ---------------------------------------------------------------------------
+jr5="$WD/g5.txt"; { echo "$HDR"
+  for i in 1 2 3 4 5; do printf 'p1,bowtie,none,,%d,%d,%d,900,10,60,4,COMPLETED,u,n,%s,d,1.b.%d\n' "$i" "$((i*100))" "$((i*200))" "$ep" "$i"; done
+  printf 'p2,bowtie,none,,7,100,200,900,10,60,4,COMPLETED,u,n,%s,d,1.b.7\n' "$ep"   # id 7 lives ONLY in p2
+} > "$jr5"; g5=0
+out=$("$FITQC" --store "$jr5" p1/bowtie/none --remove 88888 2>&1)       # absent id
+echo "$out" | grep -q 'removed \[88888\]' && { echo "GUARD5 FAIL: false 'removed' for an absent id"; fail=1; g5=1; }
+out=$("$FITQC" --store "$jr5" p1/bowtie/none --remove 7 2>&1)           # id present only in p2
+if echo "$out" | grep -q 'removed \[7\]'; then
+  awk -F, 'NR>1 && $1=="p2" && $5==7{f=1} END{exit !f}' "$jr5" && { echo "GUARD5 FAIL: reported removing id 7 from p1, but it only exists in p2 (still present)"; fail=1; g5=1; }
+fi
+# a real in-group removal must STILL succeed (no false negative from the new gate)
+out=$("$FITQC" --store "$jr5" p1/bowtie/none --remove 3 2>&1)
+echo "$out" | grep -q 'removed \[3\]' || { echo "GUARD5 FAIL: a genuine in-group removal was not reported removed"; fail=1; g5=1; }
+awk -F, 'NR>1 && $1=="p1" && $5==3{f=1} END{exit f}' "$jr5" || { echo "GUARD5 FAIL: id 3 reported removed but is still present"; fail=1; g5=1; }
+[ "$g5" = 0 ] && echo "GUARD5 ok: no-match removal reports nothing removed; real removal still succeeds."
+
 echo "----------------------------------------------------------------"
 [ "$fail" = 0 ] && echo "fitqc_adversary_guard: GREEN" || echo "fitqc_adversary_guard: RED"
 exit $fail

@@ -381,7 +381,10 @@ _prune() {   # $1=groupKey  $2=comma-separated jobIDs -> remove them via the SSO
              # LOCKED, atomic jobRecord rewrite (jrRewrite): it takes the same _jrLock a
              # finishing pipeline's jrAppendLine takes and renames a SAME-DIR temp, so a
              # concurrent pipeline write can never be clobbered and the store can't be
-             # left truncated. Returns non-zero (and changes NOTHING) if it can't lock.
+             # left truncated.
+             # Return: 0 = rows were actually dropped; 1 = rewrite applied but NO targeted
+             # jobID was present in the group (honest no-match -- caller must NOT say
+             # "removed"); 2 = could not take the lock, store UNCHANGED (retry).
     local key=$1 ids=$2 p rest s rg prog
     p=${key%%/*}; rest=${key#*/}; s=${rest%%/*}; rg=${rest#*/}
     # Per-data-row body for jrRewrite (header + col[] handled by jrRewrite). Drop a row
@@ -396,7 +399,9 @@ _prune() {   # $1=groupKey  $2=comma-separated jobIDs -> remove them via the SSO
       _rc=(_r=="")?"":((_r=="none")?"none":((_r in RM)?RM[_r]:_r));
       if($(col["pipeline"])"/"$(col["step"])"/"_rc==tgt && ($(col["jobID"]) in R)) next;
       print'
-    jrRewrite "$store" "$prog" -v ids="$ids" -v refmap="$JR_REF_CLASS" -v tgt="$p/$s/$rg"
+    jrRewrite "$store" "$prog" -v ids="$ids" -v refmap="$JR_REF_CLASS" -v tgt="$p/$s/$rg" || return 2
+    [ "${JR_REWRITE_DROPPED:-0}" -gt 0 ] && return 0
+    return 1
 }
 
 # _auto_remove GROUP : iteratively prune the worst over-cut outlier, re-fit, repeat.
@@ -422,8 +427,12 @@ _auto_remove() {
             echo "         not auto-removing; inspect it, and if it is truly bad remove it explicitly: fitQC $grp --remove $jid"
             break
         fi
-        if ! _prune "$grp" "$jid"; then
+        _prune "$grp" "$jid"; prc=$?
+        if [ "$prc" = 2 ]; then
             echo ">>> stop: removal did not apply (could not take the jobRecord lock -- a pipeline may be writing); nothing changed" >&2
+            break
+        elif [ "$prc" = 1 ]; then
+            echo ">>> stop: jobID $jid is no longer in the group (the store changed under us); nothing removed" >&2
             break
         fi
         trail="$trail $jid(|r|=$br)"
@@ -448,11 +457,12 @@ if [ -n "$removeIDs" ] || [ "$autoRemove" = 1 ]; then
 
     if [ -n "$removeIDs" ]; then
         [ "$dryRun" = 1 ] || _backup_once
-        if _prune "$grp" "$removeIDs"; then
-            echo ">>> removed [$removeIDs] from $grp"
-        else
-            echo ">>> removal did NOT apply: could not take the jobRecord lock (a pipeline may be writing). Nothing changed -- retry." >&2
-        fi
+        _prune "$grp" "$removeIDs"; prc=$?
+        case $prc in
+          0) echo ">>> removed [$removeIDs] from $grp" ;;
+          1) echo ">>> nothing removed: no jobID in [$removeIDs] is present in $grp (check the id and the group)." >&2 ;;
+          *) echo ">>> removal did NOT apply: could not take the jobRecord lock (a pipeline may be writing). Nothing changed -- retry." >&2 ;;
+        esac
     fi
 
     if [ "$autoRemove" = 1 ]; then
@@ -553,7 +563,12 @@ fitq_group() {
             qq)   QUIT=1; break;;
             p)    _clear; plot_group "$grp"; _pause;;                     # plot submenu -> back up
             r)    shift; if [ -n "$*" ]; then _backup_once
-                        if _prune "$grp" "$(echo "$* "|tr ' ' ',')"; then mutated=1; else echo "removal did not apply (store busy/locked)"; fi
+                        _prune "$grp" "$(echo "$* "|tr ' ' ',')"; prc=$?
+                        case $prc in
+                          0) mutated=1;;
+                          1) echo "nothing removed: no such jobID in this group";;
+                          *) echo "removal did not apply (store busy/locked)";;
+                        esac
                         redraw=1; fi;;
             A)    _backup_once; _auto_remove "$grp"; _pause; mutated=1; redraw=1;;
             *)    ;;                                                       # ignore junk (no recompute)
