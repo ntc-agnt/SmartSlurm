@@ -6,11 +6,12 @@
 #
 #   SMARTSLURM_ROOT=/path/to/smartslurm bash test/fitqc_adversary_guard.sh
 #
-# F1: a non-numeric/inf field must be handled IDENTICALLY by gawk and mawk, and must
-#     never cause a clean on-line row to be deleted (mawk coerced "inf"->+inf, gawk->0).
+# G1: the estimation engine + isnum() guard are awk-deterministic (identical --tsv and
+#     --auto under gawk and mawk; a non-numeric "inf" metric is neutralized the same).
 # F2: row removal must go through the LOCKED, atomic jobRecord rewrite (jrRewrite), so
 #     a concurrent pipeline write (jrAppendLine) can never be clobbered.
-# F3: --resid-cut must reject 0 (which would delete down to min-n), accept positives.
+# F3: --resid-cut (still accepted/validated) must reject 0, accept positives.
+# F4(C1): a no-match --remove must not claim success. F5: backup preserves mtime.
 #
 # Exit 0 = all invariants hold; non-zero = a defect is present (prints which).
 # ---------------------------------------------------------------------------
@@ -30,29 +31,30 @@ mkdir -p "$WD/gshim" "$WD/mshim"
 [ -n "$MAWK" ] && ln -sf "$MAWK" "$WD/mshim/awk"
 
 # ---------------------------------------------------------------------------
-# GUARD 1 (F1): gawk/mawk parity on a non-numeric ("inf") inputSize/memUsed row.
-# The SAME store + SAME --auto must delete the SAME rows under either awk, and must
-# NOT delete points that lie exactly on the clean line.
+# GUARD 1 (awk determinism): the estimation engine (max-per-size envelope, LINE/CONST
+# model choice, p93 margin, coverage, waste, influence) and the isnum() guard must
+# behave IDENTICALLY under gawk and mawk. The SAME store must yield byte-identical
+# --tsv AND byte-identical --auto results under both awks. A non-numeric ("inf") metric
+# must be neutralized the same way (mawk coerces "inf"->+inf, gawk->0).
 # ---------------------------------------------------------------------------
 if [ -n "$GAWK" ] && [ -n "$MAWK" ]; then
   mkstore() { { echo "$HDR"
-    for i in 1 2 3 4 5; do printf 'p1,bowtie,none,,%d,%d,%d,900,10,60,4,COMPLETED,u,n,%s,d,1.b.%d\n' "$i" "$((i*100))" "$((i*200))" "$ep" "$i"; done
-    printf 'p1,bowtie,none,,900,inf,inf,900,10,60,4,COMPLETED,u,n,%s,d,1.b.p\n' "$ep"
+    j=1; for s in 100 200 300 400 500; do for r in 1 2; do printf 'p1,bowtie,none,,%d,%d,%d,900,10,60,4,COMPLETED,u,n,%s,d,1.b.%d\n' "$j" "$s" "$((50*s+200))" "$ep" "$j"; j=$((j+1)); done; done
+    printf 'p1,bowtie,none,,900,300,90000,900,10,60,4,COMPLETED,u,n,%s,d,1.b.hi\n' "$ep"   # inflating envelope point
+    printf 'p1,bowtie,none,,901,300,inf,900,10,60,4,COMPLETED,u,n,%s,d,1.b.inf\n' "$ep"    # non-numeric metric: isnum must skip it IDENTICALLY
    } > "$1"; }
   mkstore "$WD/g.txt"; mkstore "$WD/m.txt"
+  gt=$(PATH="$WD/gshim:$PATH" "$FITQC" --store "$WD/g.txt" --all --tsv 2>/dev/null)
+  mt=$(PATH="$WD/mshim:$PATH" "$FITQC" --store "$WD/m.txt" --all --tsv 2>/dev/null)
+  if [ "$gt" != "$mt" ]; then
+    echo "GUARD1 FAIL: --tsv differs between gawk and mawk (awk-dependent QC)."; printf '   gawk: %s\n   mawk: %s\n' "$gt" "$mt"; fail=1
+  fi
   PATH="$WD/gshim:$PATH" "$FITQC" --store "$WD/g.txt" p1/bowtie/none --auto >/dev/null 2>&1
   PATH="$WD/mshim:$PATH" "$FITQC" --store "$WD/m.txt" p1/bowtie/none --auto >/dev/null 2>&1
   if ! diff -q <(sort "$WD/g.txt") <(sort "$WD/m.txt") >/dev/null; then
-    echo "GUARD1 FAIL: gawk and mawk produced DIFFERENT stores after the same --auto (awk-dependent silent deletion)."
-    echo "   gawk kept $(( $(grep -c . "$WD/g.txt") - 1 )) data rows; mawk kept $(( $(grep -c . "$WD/m.txt") - 1 ))."
-    fail=1
+    echo "GUARD1 FAIL: gawk and mawk produced DIFFERENT stores after the same --auto (awk-dependent removal)."; fail=1
   fi
-  for st in g m; do
-    for j in 1 2 3; do
-      grep -q ",,$j,$((j*100)),$((j*200))," "$WD/$st.txt" || { echo "GUARD1 FAIL: clean on-line row jobID $j deleted under $( [ $st = g ] && echo gawk || echo mawk )."; fail=1; }
-    done
-  done
-  [ "$fail" = 0 ] && echo "GUARD1 ok: inf-row handled identically; no clean row deleted."
+  [ "$fail" = 0 ] && echo "GUARD1 ok: new engine + isnum are awk-deterministic (identical --tsv and --auto under gawk/mawk)."
 else
   echo "GUARD1 skipped: need both gawk and mawk installed."
 fi
