@@ -132,6 +132,23 @@ echo "$out" | grep -q 'removed \[3\]' || { echo "GUARD5 FAIL: a genuine in-group
 awk -F, 'NR>1 && $1=="p1" && $5==3{f=1} END{exit f}' "$jr5" || { echo "GUARD5 FAIL: id 3 reported removed but is still present"; fail=1; g5=1; }
 [ "$g5" = 0 ] && echo "GUARD5 ok: no-match removal reports nothing removed; real removal still succeeds."
 
+# ---------------------------------------------------------------------------
+# GUARD 6 (F5): the pre-removal backup must preserve the store's mtime (cp -p), so a
+# restore does not reset the record's age and skew cleanUp's recency-based pruning.
+# ---------------------------------------------------------------------------
+jr6dir="$WD/g6"; mkdir -p "$jr6dir"; jr6="$jr6dir/jobRecord.txt"
+{ echo "$HDR"; for i in 1 2 3 4 5; do printf 'p1,bowtie,none,,%d,%d,%d,900,10,60,4,COMPLETED,u,n,%s,d,1.b.%d\n' "$i" "$((i*100))" "$((i*200))" "$ep" "$i"; done; } > "$jr6"
+touch -d '2001-02-03 04:05:06' "$jr6" 2>/dev/null || touch -t 200102030405.06 "$jr6"
+want=$(stat -c %Y "$jr6" 2>/dev/null)
+"$FITQC" --store "$jr6" p1/bowtie/none --remove 3 >/dev/null 2>&1
+bak=$(ls "$jr6dir"/jobRecord.back.*.txt 2>/dev/null | head -1)
+if [ -z "$bak" ]; then echo "GUARD6 FAIL: no backup created on removal"; fail=1
+elif [ "$(stat -c %Y "$bak" 2>/dev/null)" = "$want" ]; then
+  echo "GUARD6 ok: backup preserved the store mtime (cp -p)."
+else
+  echo "GUARD6 FAIL: backup mtime $(stat -c %Y "$bak" 2>/dev/null) != store mtime $want (cp without -p resets age)"; fail=1
+fi
+
 echo "----------------------------------------------------------------"
 [ "$fail" = 0 ] && echo "fitqc_adversary_guard: GREEN" || echo "fitqc_adversary_guard: RED"
 exit $fail

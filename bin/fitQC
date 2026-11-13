@@ -375,7 +375,10 @@ _backup_once() {
     local dir ts
     dir=$(dirname "$store"); ts=$(date +%Y-%m-%d_%H-%M-%S)
     backupPath="$dir/jobRecord.back.$ts.txt"
-    cp "$store" "$backupPath" && echo "Backed up store -> $backupPath (roll back by restoring this file)."
+    # -p preserves mode/timestamps (cleanUp's backups keep them via mv/cp -p): the
+    # backup then reflects the store's real age, so a restore does not reset mtime
+    # and skew cleanUp's recency-based pruning.
+    cp -p "$store" "$backupPath" && echo "Backed up store -> $backupPath (roll back by restoring this file)."
 }
 _prune() {   # $1=groupKey  $2=comma-separated jobIDs -> remove them via the SSOT's
              # LOCKED, atomic jobRecord rewrite (jrRewrite): it takes the same _jrLock a
