@@ -90,7 +90,7 @@ _score() {
   # M1/M2/M3 via run_case on the agent's port
   local vec="dag=NA fidelity=NA hygiene=NA"
   if [ -r "$pipeline" ]; then
-    vec="$("$here/run_case.sh" "$cdir" --candidate "$pipeline" 2>/dev/null | grep '^VECTOR' | sed 's/^VECTOR //')"
+    vec="$("$here/run_case.sh" "$cdir" --candidate "$pipeline" --scripts "$sb/work" 2>/dev/null | grep '^VECTOR' | sed 's/^VECTOR //')"
     [ -n "$vec" ] || vec="dag=NA fidelity=NA hygiene=NA"
   fi
   # M4 checkpoint

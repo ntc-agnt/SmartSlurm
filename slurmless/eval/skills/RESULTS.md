@@ -72,6 +72,29 @@ the ports don't execute** — exactly the silent-failure class this suite target
 **Action:** the skill's inline-body guidance was hardened (see the migration-assistant
 `SKILL.md` change in the same series) and the pair re-run — results below.
 
-### Re-run after the skill fix
+### Re-run after the skill fix — and a second finding
 
-_(pending — fresh real-agent runs with the hardened guidance; expect M3 → OK)_
+Fresh real-agent runs with the hardened one-line-body rule. The behavioral axis stayed
+flawless (M1/M4/M5 green throughout); M3 is the interesting column:
+
+| case | before (original skill) | after skill fix | after framework fix |
+|------|-------------------------|-----------------|---------------------|
+| `chipseq_oddity_keepdup` | hygiene FAIL (inlined body) | **hygiene OK** | OK |
+| `chipseq_bug_dangling` | hygiene FAIL (inlined body) | hygiene FAIL (**scorer re-copied the case's original script**) | **hygiene OK** |
+
+- **Skill fix landed:** both re-run agents used one-line `sh <script>.sh` bodies. The
+  oddity port then ran green immediately.
+- **Second finding (framework, surfaced by the bug re-run):** the bug agent correctly
+  flagged the dangling input, got the typo confirmation, and applied the one-token fix
+  by **editing `peak_call.sh` in its workspace** — but `run_agent`/`run_case` re-copied
+  the case's *pristine* `inputs/peak_call.sh` (still `_dedup.bam`), clobbering the fix,
+  so M3 failed for a scorer reason, not the agent's. Fix: `run_case --scripts <dir>`
+  scores the PORT with the **agent's own** step scripts (`run_agent` passes the agent's
+  workspace); the REF arm still uses the case's originals.
+- **After both fixes:** `chipseq_bug_dangling` and `chipseq_oddity_keepdup` real-agent
+  runs score **all five green**; `demo_fanin` reference double still
+  `MATCH/MATCH/OK/PASS/PASS` (no regression).
+
+The loop in one line: **the eval caught a real skill weakness *and* a real harness
+weakness, both were fixed, and a real agent then scored clean** — which is exactly what
+an evaluation suite is for.

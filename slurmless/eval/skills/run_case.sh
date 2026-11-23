@@ -16,8 +16,16 @@
 # ---------------------------------------------------------------------------
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-cdir="${1:?usage: run_case.sh <caseDir> [--candidate <driver>]}"; shift || true
-cand=""; [ "${1:-}" = "--candidate" ] && { cand="${2:?driver}"; }
+cdir="${1:?usage: run_case.sh <caseDir> [--candidate <driver>] [--scripts <dir>]}"; shift || true
+# --scripts <dir>: take the PORT's step scripts from <dir> (e.g. an agent's workspace,
+# which may hold edits it made after a flagged+approved fix) instead of the case's
+# pristine inputs/. The REF arm (Scenario 2) always uses the case's original inputs.
+cand=""; scripts=""
+while [ $# -gt 0 ]; do case "$1" in
+  --candidate) cand="${2:?driver}"; shift 2 ;;
+  --scripts)   scripts="${2:?dir}"; shift 2 ;;
+  *) shift ;;
+esac; done
 cdir="$(cd "$cdir" && pwd)"
 [ -f "$cdir/meta.yaml" ] || { echo "run_case: $cdir has no meta.yaml" >&2; exit 2; }
 
@@ -58,7 +66,7 @@ fi
 
 # ---- PORT: the rAP driver ----
 ss_new_workspace "$portws" >/dev/null; _stage_tools
-cp "$cdir"/inputs/*.sh . 2>/dev/null; rm -f ./submit.sh; [ -d "$casedata" ] && cp "$casedata"/* . 2>/dev/null; chmod +x ./*.sh 2>/dev/null || true
+cp "${scripts:-$cdir/inputs}"/*.sh . 2>/dev/null; rm -f ./submit.sh; [ -d "$casedata" ] && cp "$casedata"/* . 2>/dev/null; chmod +x ./*.sh 2>/dev/null || true
 cp "$drv" ./pipeline.sh; chmod +x ./pipeline.sh
 ss_run_pipeline "./pipeline.sh" "sbatch -p short -c 1 --mem 1G -t 5:0" >/dev/null 2>&1 || true
 cp -a ./. "$portout"/ 2>/dev/null || true
