@@ -179,31 +179,36 @@ mode, an optional output — become `if` blocks *around* the `#@` blocks (the st
 emitted or not), and a downstream `<dependsOnStep>` list naturally drops the steps
 that were not submitted. Do not branch *inside* a step; keep each step body faithful.
 
-**A `#@ … #@end` body MUST be a single one-line command — never inline a multi-line
-command.** rAP expands each body through an **unquoted here-doc**, which silently
-**eats backslash line-continuations, pipes across lines, here-docs, `awk '…'`, and
-`$(...)`**. A multi-line command inlined in a body (e.g. a `bowtie2 … \` continued over
-several lines) is split into separate broken commands at submit time and **fails at
-runtime** — and nothing in the static DAG shows it, so it passes a structure check and
-dies only when run. This is the single most common way a "correct-looking" port is
-dead on arrival.
+**Step bodies can be multi-line — the one thing to avoid is a single command
+backslash-continued across lines.** A `#@ … #@end` block takes a normal multi-line bash
+chunk: several statements on their own lines, comments, a loop — write it for
+readability. In `#@end` mode the body is written to a script on disk, so quotes,
+`awk '…'`, here-docs and pipelines are preserved **literally** (no hand-escaping — the
+old quote/here-doc mangling is gone). The one real hazard: **a single command split over
+physical lines with a trailing backslash `\`** — rAP strips the trailing `\` and turns
+each line into a separate, broken command. Nothing in the static DAG shows it, so the
+step passes a structure check and dies only at runtime (the classic "correct-looking but
+dead on arrival" port).
 
-So put every step's commands in a **helper script** and make the body a one-line call:
+So keep any one command on a single physical line (however long), **or** put it in a
+helper script and make the body a one-line call. Both of these are fine:
 
 ```
-#@2,1,align,,,sbatch …
-bash align.sh          # the WHOLE step is one line — the script holds the real commands
+#@1,0,prep,,,sbatch …              #@2,1,align,,,sbatch …
+mkdir -p out                       bash align.sh
+real_tool --in a --out out/b       #@end
 #@end
 ```
 
-- **When the input is already a set of step scripts (the usual case), this is free:**
-  the body is just `bash <script>.sh [args]`. **Do not re-inline the script's
-  contents** — call the script. The payloads then stay verbatim and unbroken.
-- **When a step needs a change you flagged and the user approved** (e.g. a corrected
-  input path), make the edit **inside the helper script** (or a small new one) and keep
-  the body a one-line call — never inline the corrected multi-line command.
-- Only a genuinely trivial single command (one line, no continuation, no pipe-across-
-  lines, no `$(...)`) may be the body directly.
+- **A multi-line body of separate statements is fine** (`mkdir -p out`, then the real
+  command on the next line) — that is *not* a backslash continuation. Comments inside
+  the block are fine too.
+- **When the input is already a set of step scripts (the usual case), the simplest
+  faithful body is `bash <script>.sh [args]`** — byte-identical payloads, and it
+  sidesteps the backslash hazard entirely. Prefer it whenever a script's commands use
+  `\`-continuations or heavy multi-line quoting.
+- **When a step needs a change you flagged and the user approved**, make the edit inside
+  the helper script (or as one physical line) — never as a `\`-continued command.
 
 Verify the emitted driver's structure before running it:
 `bash "$SL/skills/migration-assistant/tools/parse_rap_dag.sh" pipeline.sh` prints the

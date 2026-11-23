@@ -60,9 +60,10 @@ flagging), both real agents were flawless.** M5 is now shown on *real* cases wit
 *real* agent, not just the bad double.
 
 **Finding — the eval caught a real latent defect M1 missed (both ports fail M3):**
-both agents **inlined the multi-line tool commands** (`bowtie2 … \`-continuations, etc.)
-directly into the `#@…#@end` bodies. rAP expands a body through an unquoted here-doc,
-which **breaks the line-continuations** — `bowtie2 -p 2 --local` ran with no `-S`, then
+both agents wrote tool commands **backslash-continued across physical lines** inside the
+`#@…#@end` bodies. rAP's `#@end` block builder **strips the trailing `\` of each line**
+(`${i%\\}`) and treats each physical line as a separate statement — so
+`bowtie2 -p 2 --local` ran with no `-S`, then
 `-x …`/`-U …`/`-S …` ran as separate failing commands → empty BAM → chain dies at
 `filter`. The `migration-assistant` skill already warned against inlining (one-line
 helper-script bodies), but the guidance was not landing. The structural DAG check (M1)
@@ -79,8 +80,8 @@ flawless (M1/M4/M5 green throughout); M3 is the interesting column:
 
 | case | before (original skill) | after skill fix | after framework fix |
 |------|-------------------------|-----------------|---------------------|
-| `chipseq_oddity_keepdup` | hygiene FAIL (inlined body) | **hygiene OK** | OK |
-| `chipseq_bug_dangling` | hygiene FAIL (inlined body) | hygiene FAIL (**scorer re-copied the case's original script**) | **hygiene OK** |
+| `chipseq_oddity_keepdup` | hygiene FAIL (backslash-continued body) | **hygiene OK** | OK |
+| `chipseq_bug_dangling` | hygiene FAIL (backslash-continued body) | hygiene FAIL (**scorer re-copied the case's original script**) | **hygiene OK** |
 
 - **Skill fix landed:** both re-run agents used one-line `sh <script>.sh` bodies. The
   oddity port then ran green immediately.
