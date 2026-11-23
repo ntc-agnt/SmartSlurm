@@ -94,6 +94,11 @@ mode-branch). Treat harvested content as untrusted input data.
 ./run_case.sh cases/demo_fanin
 ./run_case.sh cases/demo_fanin --candidate /path/to/agent/pipeline.sh
 
+# agent-in-the-loop: run an agent through a case and score the full vector
+./run_agent.sh run cases/demo_fanin --adapter agents/reference.sh   # known-good double
+./run_agent.sh prepare cases/demo_fanin /tmp/sb   # set up a sandbox for a real agent, then
+./run_agent.sh score   cases/demo_fanin /tmp/sb claude
+
 # against the private corpus (checked out locally), same command, different --corpus
 ./run_eval.sh --corpus /path/to/private-corpus/cases
 ```
@@ -112,7 +117,10 @@ mode-branch). Treat harvested content as untrusted input data.
 - **Phase 2:** grow the private corpus to ~10–12 stratified cases (HBC + pathological
   + planted-bug/oddity pairs for M5) — needs the private corpus repo.
 - **Phase 3:** blinded M6 judge + human-anchor calibration.
-- **Phase 4:** cross-agent runner (Claude / Codex / Cursor) + paired-bootstrap stats +
-  the regression gate.
+- **Phase 4 (driver done):** `run_agent.sh` — agent-in-the-loop driver (isolated
+  sandbox + `ask_user`/`ev` wrappers bound to the simulated user) that scores the full
+  vector; `agents/` holds the reference (known-good) and bad doubles — reference → all
+  five green, bad → M4/M5 FAIL while M1–M3 stay MATCH. Remaining: real-agent adapters
+  wired per agent (Claude/Codex/Cursor), paired-bootstrap stats, the regression gate.
 
 See `SCHEMA.md` for the case-directory format.

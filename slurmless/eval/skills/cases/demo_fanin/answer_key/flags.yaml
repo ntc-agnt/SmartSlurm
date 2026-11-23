@@ -1,0 +1,5 @@
+# M5 flag oracle for demo_fanin (a correct case). Nothing to flag; the fan-in is an
+# intentional design the agent must NOT second-guess. A false alarm here fails M5.
+should_flag: []
+should_not_flag:
+  - "fan-?in|combine must wait|both workers"
