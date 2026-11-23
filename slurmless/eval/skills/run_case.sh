@@ -29,6 +29,15 @@ export SMARTSLURM_ROOT
 source "$SL/test/lib/harness.sh"
 ss_activate >/dev/null 2>&1 || { echo "run_case: ss_activate failed" >&2; exit 1; }
 
+# A case may ship its own run environment (deterministic mock tool stand-ins + tiny
+# inputs) so a real-tool workflow runs off-cluster: env/bin -> on PATH, env/data ->
+# staged into each workspace. Mocks validate wiring, not the science.
+casebin="$cdir/env/bin"; casedata="$cdir/env/data"
+[ -d "$casebin" ] && chmod +x "$casebin"/* 2>/dev/null || true
+# NOTE: ss_new_workspace RESETS PATH, so env/bin is (re-)prepended after each
+# workspace is created (below), not here — otherwise the mocks vanish by step time.
+_stage_tools() { [ -d "$casebin" ] && export PATH="$casebin:$PATH"; return 0; }
+
 intended="$cdir/answer_key/intended_dag.tsv"
 contract="$cdir/answer_key/identity_contract"
 inv="$cdir/oracle/invariants.sh"
@@ -39,20 +48,20 @@ refout="$base/refout"; portout="$base/portout"; mkdir -p "$refout" "$portout"
 
 # ---- REF: original workflow (Scenario 2) ----
 if [ -f "$cdir/inputs/submit.sh" ]; then
-  ss_new_workspace "$refws" >/dev/null
-  cp "$cdir"/inputs/*.sh . 2>/dev/null; chmod +x ./*.sh 2>/dev/null || true
+  ss_new_workspace "$refws" >/dev/null; _stage_tools
+  cp "$cdir"/inputs/*.sh . 2>/dev/null; [ -d "$casedata" ] && cp "$casedata"/* . 2>/dev/null; chmod +x ./*.sh 2>/dev/null || true
   ss_wf_activate; bash ./submit.sh >/dev/null 2>&1; ss_wf_drain >/dev/null 2>&1
-  cp -f ./*.txt "$refout"/ 2>/dev/null || true
+  cp -a ./. "$refout"/ 2>/dev/null || true
 else
-  echo "run_case: no inputs/submit.sh — Scenario 1 live run is Phase 1.5" >&2
+  : "Scenario 1 (loose scripts): no original to diff — score M1 (DAG) + M3 (hygiene); M2 is n/a"
 fi
 
 # ---- PORT: the rAP driver ----
-ss_new_workspace "$portws" >/dev/null
-cp "$cdir"/inputs/*.sh . 2>/dev/null; rm -f ./submit.sh; chmod +x ./*.sh 2>/dev/null || true
+ss_new_workspace "$portws" >/dev/null; _stage_tools
+cp "$cdir"/inputs/*.sh . 2>/dev/null; rm -f ./submit.sh; [ -d "$casedata" ] && cp "$casedata"/* . 2>/dev/null; chmod +x ./*.sh 2>/dev/null || true
 cp "$drv" ./pipeline.sh; chmod +x ./pipeline.sh
 ss_run_pipeline "./pipeline.sh" "sbatch -p short -c 1 --mem 1G -t 5:0" >/dev/null 2>&1 || true
-cp -f ./*.txt "$portout"/ 2>/dev/null || true
+cp -a ./. "$portout"/ 2>/dev/null || true
 
 # ---- score the vector ----
 echo "=== $(basename "$cdir")  (driver: $([ -n "$cand" ] && echo candidate || echo reference)) ==="
