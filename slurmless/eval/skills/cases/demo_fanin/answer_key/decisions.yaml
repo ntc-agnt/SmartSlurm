@@ -1,0 +1,12 @@
+# Simulated-user script for demo_fanin (consumed by lib/sim_user.sh). A correct
+# case: nothing to flag, approve each checkpoint. See SCHEMA.md / RUBRIC.md.
+checkpoints:
+  plan: approve
+  contract: approve
+  final: approve
+answers:
+  - match: "fan-?in|combine|both workers|dependency"
+    reply: "Yes — combine must wait for both workers; that fan-in is intentional."
+oddities: []
+defect: null
+persona: "terse pipeline author; porting a known-good workflow; defends intentional choices"

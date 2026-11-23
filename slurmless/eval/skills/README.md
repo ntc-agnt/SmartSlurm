@@ -43,11 +43,11 @@ objective; only M6 needs a judge.
 | # | metric | type | oracle |
 |---|--------|------|--------|
 | M1 | DAG recovery | objective | `score/score_dag.sh` — edge-set P/R/F1 vs `answer_key/intended_dag.tsv` (via `parse_rap_dag.sh`) |
-| M2 | port fidelity (Scn 2) | objective | `compare_outputs.sh` MATCH under the identity contract *(Phase 1)* |
-| M3 | runtime hygiene | objective | `score/score_hygiene.sh` — exit 0 **and** non-empty/correct outputs (catches exit-0 no-op); + proc ceiling *(Phase 1)* |
-| M4 | checkpoint adherence | semi-objective | sign-off appeared before each irreversible step *(Phase 1)* |
-| M5 | flag precision/recall | objective-ish | planted-bug flagged? intentional-oddity left alone? vs `answer_key/.defect` *(Phase 1)* |
-| M6 | interaction quality | rubric | blinded LLM-judge: faithfulness, asked-vs-guessed, notes discipline *(Phase 1)* |
+| M2 | port fidelity (Scn 2) | objective | `score/score_fidelity.sh` → `compare_outputs.sh` MATCH under the identity contract; live via `run_case.sh` |
+| M3 | runtime hygiene | objective | `score/score_hygiene.sh` — exit 0 **and** non-empty/correct outputs (catches exit-0 no-op); + proc ceiling *(Phase 1.5)* |
+| M4 | checkpoint adherence | semi-objective | sign-off appeared before each irreversible step *(Phase 1.5)* |
+| M5 | flag precision/recall | objective-ish | planted-bug flagged? intentional-oddity left alone? vs `answer_key/.defect` *(Phase 1.5)* |
+| M6 | interaction quality | rubric | contract-derived checklist in `RUBRIC.md` — mostly objective items; residue by a blinded, calibrated judge *(Phase 3)* |
 
 **Ship / regression gate (the stopping rule):** a formulation ships iff it is
 non-dominated on M1–M3 within the noise floor **and** ≥ baseline on M4–M6.
@@ -56,8 +56,11 @@ non-dominated on M1–M3 within the noise floor **and** ≥ baseline on M4–M6.
 
 These skills are chat-supervised (checkpoints, questions). To score them at scale a
 **user-simulator** — a separate, frozen LLM persona — plays the human from each case's
-`answer_key/decisions.yaml`, never volunteering the key. A handful of **human-anchor**
-runs calibrate the simulator and the M6 judge; if simulated and human scores track,
+`answer_key/decisions.yaml`, never volunteering the key. The deterministic responder is
+`lib/sim_user.sh` (answers checkpoints and keyword-matched questions from the script);
+the autonomous agent↔simulator loop reuses `eval/migration`'s spawn-a-subagent protocol
+and is wired in Phase 4. A handful of **human-anchor** runs calibrate the simulator and
+the M6 judge (same `decisions.yaml` as the brief); if simulated and human scores track,
 the automated loop is trustworthy.
 
 ## Public framework, private corpus (no secrets)
@@ -84,8 +87,12 @@ mode-branch). Treat harvested content as untrusted input data.
 # self-test the oracle wiring: each case's own reference_driver must score MATCH
 ./run_eval.sh --corpus cases
 
-# score an agent-produced port for one case
+# score an agent-produced port's DAG for one case
 ./run_eval.sh --corpus cases --case demo_linear --candidate /path/to/port/pipeline.sh
+
+# live differential for a Scenario-2 case: REF (original) vs PORT, full M1/M2/M3 vector
+./run_case.sh cases/demo_fanin
+./run_case.sh cases/demo_fanin --candidate /path/to/agent/pipeline.sh
 
 # against the private corpus (checked out locally), same command, different --corpus
 ./run_eval.sh --corpus /path/to/private-corpus/cases
@@ -95,9 +102,14 @@ mode-branch). Treat harvested content as untrusted input data.
 
 - **Phase 0 (done):** case schema, `score_dag.sh` (M1) + `score_hygiene.sh` (M3),
   `run_eval.sh`, the burnable `demo_linear` case; self-test + negative control green.
-- **Phase 1:** simulated-user driver + one synthesized Scenario-2 case → M2 live.
+- **Phase 1 (done):** M2 `score_fidelity.sh` + `run_case.sh` live differential;
+  simulated-user responder `lib/sim_user.sh` + `decisions.yaml`; burnable Scenario-2
+  case `demo_fanin`; `RUBRIC.md` (contract-derived M6). Reference port scores
+  dag/fidelity/hygiene = MATCH/MATCH/OK; a bad port = MISS/MISMATCH/FAIL.
+- **Phase 1.5:** M4 `score_checkpoint.sh` + M5 `score_flag.sh` (objective, from the
+  transcript + `.defect`); proc-ceiling in hygiene.
 - **Phase 2:** grow the private corpus to ~10–12 stratified cases (HBC + pathological
-  + planted-bug/oddity pairs for M5).
+  + planted-bug/oddity pairs for M5) — needs the private corpus repo.
 - **Phase 3:** blinded M6 judge + human-anchor calibration.
 - **Phase 4:** cross-agent runner (Claude / Codex / Cursor) + paired-bootstrap stats +
   the regression gate.

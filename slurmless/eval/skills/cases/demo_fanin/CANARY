@@ -1,0 +1,4 @@
+SLURMLESS-SKILL-EVAL-CANARY-7f3a9c2e-demo_fanin-BURNABLE-DO-NOT-TRAIN
+This file marks a PUBLIC, burnable eval case (Scenario 2). Its presence in any
+model's training data indicates benchmark contamination. Framework smoke test only;
+never backs the ship/regression gate. Real scored cases are private.

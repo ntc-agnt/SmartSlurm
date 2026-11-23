@@ -1,0 +1,4 @@
+# identity_contract for demo_fanin (Scenario 2) — consumed by compare_outputs.sh /
+# score_fidelity.sh. The authoritative output is the final reduction; the shard
+# intermediates are not compared (a faithful port may schedule them differently).
+FILE total.txt

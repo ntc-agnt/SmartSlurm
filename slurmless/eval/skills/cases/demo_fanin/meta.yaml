@@ -1,0 +1,17 @@
+# demo_fanin — burnable, fully-synthetic Scenario-2 case shipped IN-TREE (public) to
+# self-test the M2 (fidelity) + simulated-user wiring. CANARY-marked: assume
+# contaminated, never back the ship/regression gate. Real scored cases are private.
+id: demo_fanin
+scenario: 2                 # existing hand-rolled SLURM workflow -> rAP
+visibility: public-burnable
+source: synthetic
+tags: [fanin, fanout, scenario2, synthetic, smoke]
+difficulty: trivial
+metrics: [dag_recovery, fidelity, hygiene]
+answer_key:
+  intended_dag: answer_key/intended_dag.tsv
+  reference_driver: answer_key/reference_driver.sh
+  identity_contract: answer_key/identity_contract
+  decisions: answer_key/decisions.yaml
+oracle:
+  invariants: oracle/invariants.sh

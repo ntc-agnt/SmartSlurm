@@ -1,0 +1,6 @@
+# intended_dag.tsv — ground-truth step DAG for demo_fanin (HIDDEN from the agent).
+# <stepName>\t<depName>  ("-" = root). Fan-out (worker) and fan-in (combine) fold
+# into logical steps; the name-based edges are what parse_rap_dag.sh resolves.
+prep	-
+worker	prep
+combine	worker
