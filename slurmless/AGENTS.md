@@ -134,18 +134,27 @@ Claude Code auto-discovers them (and installs this repo as the `slurmless` plugi
 see `PACKAGING.md`). **Any other agent** (OpenAI / Codex, Gemini, Cursor, Aider, …)
 or a human uses the exact same files, with no plugin:
 
-1. Make this repo (or `SmartSlurm/slurmless/` when vendored) the working directory
-   and set `$SL` to its root. Frameworks that read `AGENTS.md` / conventions files
+1. Make the slurmless directory (`SmartSlurm/slurmless/`, in-tree) the working
+   directory and set `$SL` to its root. Frameworks that read `AGENTS.md` / conventions files
    pick this guide up automatically; otherwise load the relevant `SKILL.md` as your
    system / developer instructions.
 2. Follow that `SKILL.md` body — it is model-neutral prose. Ignore only the
    Claude-specific framing: the YAML front-matter, the `/migration-assistant`
    invocation, and `${CLAUDE_PLUGIN_ROOT}` (for you, `$SL` is just this repo root).
 3. The tools it calls are plain bash:
-   `skills/migration-assistant/tools/{extract_dag,emit_rap,compare_outputs}.sh`.
+   `skills/migration-assistant/tools/{extract_dag,emit_rap,parse_rap_dag,compare_outputs}.sh`.
 4. Verify end-to-end in one command (converts a tiny SLURM workflow and
    differentially tests the port; exits 0 on success):
    `bash skills/migration-assistant/examples/ma_dryrun.sh`.
+
+**No shell or filesystem? (a chat-only assistant.)** If you cannot run bash — a chat
+agent with no code sandbox — these skills become **advisory**, not executable. You can
+still explain the rAP `#@` grammar, review a DAG the user pastes, draft the port,
+propose an identity contract, and apply the light-touch flagging judgment. You CANNOT
+run `bootstrap.sh`, the harness, or the differential test, so you **cannot
+self-validate**. Say so plainly and hand the port to a shell-capable agent or a human
+to run the sandbox gate (`ma_dryrun.sh` / the harness) before any cluster run — never
+present an unvalidated port as tested.
 
 The harness, tools, and `SKILL.md` procedures are the single source of truth; the
 Claude plugin and this neutral entry are thin wrappers over them, so there is nothing

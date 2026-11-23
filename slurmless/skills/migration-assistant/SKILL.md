@@ -90,6 +90,11 @@ Never return a port you have only reasoned about. Before handback:
 Hand back only once this gate is green, and report exactly what you ran and the
 result (the differential verdict, the sanity checks, and any flagged issues).
 
+**No shell to run the gate? (a chat-only agent.)** Then you can draft and review the
+port but **cannot validate** it — say so plainly, mark the port **unvalidated**, and
+hand it to a shell-capable agent or human to run the gate before any cluster run.
+Never present an unrun port as tested.
+
 ## Where the harness lives — set `$SL` first
 
 Every command below runs the slurmless harness by path, so first resolve its root
