@@ -16,7 +16,8 @@ simulated user) is given.
     decisions.yaml              #   simulated-user script: checkpoint rulings, Q&A,
                                 #     intentional-oddity list, planted-bug {locus, fix}  (Phase 1)
     identity_contract           #   Scenario 2 only: FILE/NORMALIZE/SORT for compare_outputs.sh (Phase 1)
-    .defect                     #   planted-defect description for M5 scoring (buggy cases only)
+    .defect                     #   human-readable planted-defect note (buggy cases only)
+    flags.yaml                  #   M5 oracle: should_flag / should_not_flag ERE lists
   oracle/
     invariants.sh <runDir>      #   M3 Scenario-1 sanity: non-empty/correct outputs; exit 0 iff OK
 ```
@@ -42,4 +43,30 @@ simulated user) is given.
 - **`meta.yaml` `visibility`** — `public-burnable` (ships in-tree, carries `CANARY`,
   never backs the gate) or `private` (the real scored corpus, injected by `--corpus`).
 
+## Run transcript (M4 / M5)
+
+The agent-in-the-loop driver (Phase 4) records a **transcript** — one event per line —
+that the structural scorers read. The simulated-user responder logs the checkpoints
+it is asked; the driver logs actions and the agent's flags:
+
+```
+checkpoint <plan|contract|final>
+question <text>
+flag <text>                       # a concern the agent raised (not mere prose)
+action <emit|run_pipeline|compare|handback>
+```
+
+- **`score_checkpoint.sh <transcript> <scenario>` (M4)** — each required checkpoint
+  precedes the step it gates: `plan` before `run_pipeline`; `contract` before
+  `compare` (Scenario 2); `final` before `handback`.
+- **`score_flag.sh <transcript> <flags.yaml>` (M5)** — matches the `flag` events (only)
+  against `answer_key/flags.yaml`'s `should_flag` (must raise) and `should_not_flag`
+  (must not raise). Precision-first: any false alarm fails. Merely *mentioning* an
+  unusual choice as deliberate is not a `flag`, so it does not count against precision.
+
+`flags.yaml` for a correct case has empty lists. A buggy case lists the planted
+defect's pattern under `should_flag`; an intentional-oddity case lists it under
+`should_not_flag`.
+
 See `cases/demo_linear/` for a minimal worked example (Scenario 1, M1 + M3).
+

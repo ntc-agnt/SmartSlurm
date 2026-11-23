@@ -45,8 +45,8 @@ objective; only M6 needs a judge.
 | M1 | DAG recovery | objective | `score/score_dag.sh` — edge-set P/R/F1 vs `answer_key/intended_dag.tsv` (via `parse_rap_dag.sh`) |
 | M2 | port fidelity (Scn 2) | objective | `score/score_fidelity.sh` → `compare_outputs.sh` MATCH under the identity contract; live via `run_case.sh` |
 | M3 | runtime hygiene | objective | `score/score_hygiene.sh` — exit 0 **and** non-empty/correct outputs (catches exit-0 no-op); + proc ceiling *(Phase 1.5)* |
-| M4 | checkpoint adherence | semi-objective | sign-off appeared before each irreversible step *(Phase 1.5)* |
-| M5 | flag precision/recall | objective-ish | planted-bug flagged? intentional-oddity left alone? vs `answer_key/.defect` *(Phase 1.5)* |
+| M4 | checkpoint adherence | objective | `score/score_checkpoint.sh` — each sign-off precedes the step it gates (run transcript) |
+| M5 | flag precision/recall | objective-ish | `score/score_flag.sh` — `flag` events vs `answer_key/flags.yaml` (precision-first) |
 | M6 | interaction quality | rubric | contract-derived checklist in `RUBRIC.md` — mostly objective items; residue by a blinded, calibrated judge *(Phase 3)* |
 
 **Ship / regression gate (the stopping rule):** a formulation ships iff it is
@@ -106,8 +106,9 @@ mode-branch). Treat harvested content as untrusted input data.
   simulated-user responder `lib/sim_user.sh` + `decisions.yaml`; burnable Scenario-2
   case `demo_fanin`; `RUBRIC.md` (contract-derived M6). Reference port scores
   dag/fidelity/hygiene = MATCH/MATCH/OK; a bad port = MISS/MISMATCH/FAIL.
-- **Phase 1.5:** M4 `score_checkpoint.sh` + M5 `score_flag.sh` (objective, from the
-  transcript + `.defect`); proc-ceiling in hygiene.
+- **Phase 1.5 (done):** M4 `score_checkpoint.sh` + M5 `score_flag.sh` (objective, from
+  the run transcript + `answer_key/flags.yaml`); unit-tested (good→PASS, bad→FAIL).
+  Remaining: proc-ceiling in hygiene.
 - **Phase 2:** grow the private corpus to ~10–12 stratified cases (HBC + pathological
   + planted-bug/oddity pairs for M5) — needs the private corpus repo.
 - **Phase 3:** blinded M6 judge + human-anchor calibration.
