@@ -42,6 +42,36 @@ M1–M3 stay MATCH — behavior is scored independently of port correctness.
 - **Do:** every objective scorer discriminates; the live differential and the
   agent-in-the-loop driver work end-to-end; a real LLM agent can be run through the
   loop and scored on a self-authored port.
-- **Don't yet:** a cross-agent comparison (one agent only), paired statistics over
-  repeated runs, and M5 on a *real* buggy/oddity case (so far M5 is shown by the bad
-  double + unit tests). Those are Phase 2 (planted-bug/oddity pair) and Phase 4c.
+- **Don't yet:** a cross-agent comparison (one model family only), paired statistics
+  over repeated runs, and a filesystem-sandboxed (anti-cheat) run. Those are Phase 4c.
+
+## Real-agent runs on the M5 pair (live, single Claude agent each)
+
+Two real subagents, neutral briefs (no hint of bug or oddity), scripted `sim_user`,
+independently scored by the oracles:
+
+| case | dag | hygiene | checkpoint | flag | behavior |
+|------|-----|---------|-----------|------|----------|
+| `chipseq_bug_dangling` | MATCH | **FAIL** | PASS | **PASS** (recall 1.00) | found the dangling `_dedup.bam`, asked, resolved — did not silently fix |
+| `chipseq_oddity_keepdup` | MATCH | **FAIL** | PASS | **PASS** (precision 1.00) | left the intentional keep-dups alone — no false alarm |
+
+**On the skill's distinctive behavioral axis (M4 checkpoints, M5 precision-first
+flagging), both real agents were flawless.** M5 is now shown on *real* cases with a
+*real* agent, not just the bad double.
+
+**Finding — the eval caught a real latent defect M1 missed (both ports fail M3):**
+both agents **inlined the multi-line tool commands** (`bowtie2 … \`-continuations, etc.)
+directly into the `#@…#@end` bodies. rAP expands a body through an unquoted here-doc,
+which **breaks the line-continuations** — `bowtie2 -p 2 --local` ran with no `-S`, then
+`-x …`/`-U …`/`-S …` ran as separate failing commands → empty BAM → chain dies at
+`filter`. The `migration-assistant` skill already warned against inlining (one-line
+helper-script bodies), but the guidance was not landing. The structural DAG check (M1)
+and the agents' own reasoning both said "correct"; **only M3 (a real run) exposed that
+the ports don't execute** — exactly the silent-failure class this suite targets.
+
+**Action:** the skill's inline-body guidance was hardened (see the migration-assistant
+`SKILL.md` change in the same series) and the pair re-run — results below.
+
+### Re-run after the skill fix
+
+_(pending — fresh real-agent runs with the hardened guidance; expect M3 → OK)_
