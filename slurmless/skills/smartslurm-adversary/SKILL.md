@@ -1,6 +1,7 @@
 ---
 name: smartslurm-adversary
 description: Adversarially review a SmartSlurm change to find bugs BEFORE on-cluster testing or an upstream push. Use before green-lighting any runAsPipeline / ssbatch / cleanUp.sh / estimateResource / jobRecordSchema change, when reviewing a diff or PR for correctness, and especially when hunting SILENT bugs that never raise a tool error — dropped jobRecord rows, improper pruning / data loss, v1↔v2 back-compat breakage, schema regressions, cross-pipeline bleed, wrong estimates. Runs the slurmless harness as the weapon and leaves behind failing blocks + regression guards.
+compatibility: Needs bash with /bin/sh = bash; gawk AND mawk for the portability checks; a SmartSlurm checkout (SMARTSLURM_ROOT); gnuplot for the curve-fit blocks. Scratch only.
 ---
 
 # smartslurm adversary — break it before the cluster does
@@ -11,8 +12,9 @@ wrong**. Assume the author already ran the happy path and already believes it is
 correct. Hunt what they did not think to try.
 
 The harness (`slurmless-harness` skill / `AGENTS.md`) is your weapon; this skill is
-the *method*. `$SL` = the harness root (plugin: `${CLAUDE_PLUGIN_ROOT}`; standalone:
-the repo root). `$SMARTSLURM_ROOT` = the tool checkout under review.
+the *method*. `$SL` = the harness root — the slurmless dir with `bootstrap.sh`/`test/`
+(`SmartSlurm/slurmless/`); *Claude-plugin users:* `${CLAUDE_PLUGIN_ROOT}`.
+`$SMARTSLURM_ROOT` = the tool checkout under review.
 
 ## Prime directive: independence
 

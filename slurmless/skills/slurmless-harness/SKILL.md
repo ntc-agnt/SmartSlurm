@@ -1,6 +1,7 @@
 ---
 name: slurmless-harness
 description: Run or develop with the slurmless Slurm-free SmartSlurm test harness. Use when testing or developing SmartSlurm (runAsPipeline, ssbatch, cleanUp.sh, checkRun, checkRunGrid, diagnose.sh, resource estimation) without a Slurm scheduler, running the mock-Slurm test suite, adding a test fixture, reproducing an OOM/timeout/failure, or converting a pipeline to runAsPipeline and testing it off-cluster.
+compatibility: Needs bash with /bin/sh = bash (the harness repoints it in a disposable sandbox); a SmartSlurm checkout (SMARTSLURM_ROOT, auto-resolved in-tree); gnuplot for the curve-fit blocks; python3 for the interactive-monitor UI suite. Scratch only.
 ---
 
 # slurmless harness
@@ -16,7 +17,7 @@ Full operator detail is in `AGENTS.md`, `CONTEXT.md`, and `test/README.md`.
 ./bootstrap.sh            # resolve the SmartSlurm checkout + run the clean_2step baseline
 ```
 Green baseline → proceed. Red → the environment isn't set up; diagnose before anything else.
-(`SMARTSLURM_ROOT` auto-resolves when vendored at `SmartSlurm/slurmless/`; otherwise
+(`SMARTSLURM_ROOT` auto-resolves in-tree at `SmartSlurm/slurmless/`; otherwise
 `export SMARTSLURM_ROOT=/path/to/SmartSlurm`.)
 
 ## Common tasks

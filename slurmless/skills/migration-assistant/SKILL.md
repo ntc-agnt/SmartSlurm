@@ -1,6 +1,7 @@
 ---
 name: migration-assistant
 description: Convert a non-SmartSlurm pipeline to the runAsPipeline (rAP) framework, collaboratively and validated in the slurmless sandbox. Use when a user has a hand-rolled SLURM workflow (sbatch + --dependency) to port to SmartSlurm/rAP, or a pile of loose processing scripts to turn into a pipeline, and wants it tested off-cluster before running for real. Builds on the slurmless user-workflow harness (ss_wf_activate / ss_wf_drain).
+compatibility: Needs bash with /bin/sh = bash; a SmartSlurm checkout (SMARTSLURM_ROOT, auto-resolved in-tree at SmartSlurm/slurmless/); and the user's real step tools via a conda env / container / module list (or harness stubs). Scratch only.
 ---
 
 # Migration Assistant
@@ -92,19 +93,21 @@ result (the differential verdict, the sanity checks, and any flagged issues).
 ## Where the harness lives — set `$SL` first
 
 Every command below runs the slurmless harness by path, so first resolve its root
-into `$SL` (it is **not** the user's CWD — their CWD is their own pipeline):
+into `$SL` (it is **not** the user's CWD — their CWD is their own pipeline). `$SL` is
+the **slurmless directory** — the one that holds `bootstrap.sh`, `test/`, and
+`skills/`; in a SmartSlurm checkout that is `SmartSlurm/slurmless/`. Set it to that
+absolute path:
 
-- **Installed as the `slurmless` plugin:** the harness root is `${CLAUDE_PLUGIN_ROOT}`
-  (this expands to the plugin's absolute path). Run `export SL="${CLAUDE_PLUGIN_ROOT}"`.
-- **Working inside the standalone slurmless repo** (or `SmartSlurm/slurmless/` once
-  vendored): `$SL` is that repo's root — `export SL="$(pwd)"` from its top, or the
-  absolute path to it. *Any agent reading this file as plain Markdown (not via the
-  Claude plugin) is in this case — `${CLAUDE_PLUGIN_ROOT}` does not apply to you.*
+```bash
+export SL=/path/to/SmartSlurm/slurmless      # the dir with bootstrap.sh, test/, skills/
+```
 
-The SmartSlurm checkout under test is auto-resolved by `bootstrap.sh` (vendored
-parent → sibling `../SmartSlurm` → clone upstream). To pin one, set
-`export SMARTSLURM_ROOT=<path>` — when installed as a plugin and the user set the
-**SmartSlurm checkout** config, use `${user_config.smartslurm_path}` for it.
+> *Claude-plugin users only:* `$SL` is `${CLAUDE_PLUGIN_ROOT}` (set only under the
+> Claude plugin — ignore it otherwise): `export SL="${CLAUDE_PLUGIN_ROOT}"`.
+
+The SmartSlurm checkout under test is auto-resolved by `bootstrap.sh` (in-tree parent
+→ sibling `../SmartSlurm` → clone upstream). To pin one, set `export SMARTSLURM_ROOT=<path>`.
+*(Claude-plugin users who set the **SmartSlurm checkout** config: `${user_config.smartslurm_path}`.)*
 
 ## First move, always
 
