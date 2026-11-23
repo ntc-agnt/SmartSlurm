@@ -1,0 +1,7 @@
+# intended_dag.tsv — the ground-truth step DAG for demo_linear (HIDDEN from the agent).
+# One line per step:  <stepName>\t<depName>   (depName = "-" for a dependency-free root)
+# Semantics match parse_rap_dag.sh's resolved, name-based edge output. Multiple deps:
+# one line per (step, dep) pair.
+gen	-
+square	gen
+sum	square

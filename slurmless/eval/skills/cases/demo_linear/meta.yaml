@@ -1,0 +1,18 @@
+# demo_linear — a burnable, fully-synthetic Scenario-1 case shipped IN-TREE (public)
+# to make the framework runnable and self-testing on its own. It is deliberately
+# trivial and carries a CANARY: assume it is contaminated, never let it back the
+# ship/regression gate. Real scored cases live in the PRIVATE corpus (see README).
+id: demo_linear
+scenario: 1                 # loose scripts, no existing pipeline
+visibility: public-burnable
+source: synthetic
+tags: [linear, scenario1, synthetic, smoke]
+difficulty: trivial
+# Metrics this case exercises in Phase 0:
+metrics: [dag_recovery, hygiene]
+# answer_key/ is HIDDEN from the agent at run time; it is the scorer's ground truth.
+answer_key:
+  intended_dag: answer_key/intended_dag.tsv
+  reference_driver: answer_key/reference_driver.sh
+oracle:
+  invariants: oracle/invariants.sh
