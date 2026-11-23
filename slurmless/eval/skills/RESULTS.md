@@ -70,8 +70,11 @@ helper-script bodies), but the guidance was not landing. The structural DAG chec
 and the agents' own reasoning both said "correct"; **only M3 (a real run) exposed that
 the ports don't execute** — exactly the silent-failure class this suite targets.
 
-**Action:** the skill's inline-body guidance was hardened (see the migration-assistant
-`SKILL.md` change in the same series) and the pair re-run — results below.
+**Action:** the skill's body guidance was corrected to favor readable multi-line blocks
+and name the real hazard (see the migration-assistant `SKILL.md` change in this series),
+and the pair re-run — results below. The underlying **runAsPipeline parser bug** (it
+strips backslash continuations from `#@end` bodies) is written up for engine hardening
+in [`findings/rap-block-backslash-continuation.md`](findings/rap-block-backslash-continuation.md).
 
 ### Re-run after the skill fix — and a second finding
 
