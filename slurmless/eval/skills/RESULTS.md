@@ -102,3 +102,30 @@ flawless (M1/M4/M5 green throughout); M3 is the interesting column:
 The loop in one line: **the eval caught a real skill weakness *and* a real harness
 weakness, both were fixed, and a real agent then scored clean** — which is exactly what
 an evaluation suite is for.
+
+## Cross-model performance (Opus / Sonnet / Haiku)
+
+Same migration task (clean HBC `chipseq_align_peak` — no planted bug), same scored
+protocol, run with the agent model set to each tier. Scored on the current engine and
+re-scored on the fixed engine (`feat/rap-block-body`) to separate the known backslash
+bug from genuine model-capability gaps.
+
+| model | M1 DAG | M4 checkpoint | flag precision | marker grammar | M3 (current engine) | M3 (fixed engine) |
+|-------|--------|---------------|----------------|----------------|---------------------|-------------------|
+| Opus   | MATCH | PASS | no false alarm | correct | FAIL (backslash) | OK |
+| Sonnet | MATCH | PASS | no false alarm (reasoned correctly re: the dup-filter) | correct | FAIL (backslash) | **OK** |
+| Haiku  | MATCH | PASS | no false alarm | **malformed** (no `sbatch` prefix, empty root dep) | FAIL (backslash + grammar) | **FAIL (grammar; 0 steps ran)** |
+
+Findings:
+- **The core cognitive task is tier-robust.** All three recovered the DAG, followed the
+  checkpoint protocol, and raised no false alarms (precision-first) — down to Haiku.
+- **Backslash-inlining is universal across tiers** (Opus, Sonnet, Haiku all did it) —
+  reinforcing that the engine fix, not skill guidance, is the real remedy.
+- **The genuine capability gap is at Haiku, in rAP marker grammar.** It omitted the
+  `sbatch` prefix in the options field and left the root dependency empty, so no jobs
+  were submitted even on the fixed engine. It self-flagged the uncertainty ("I did not
+  read the reference cheat-sheet … someone should check the markers") and did not
+  self-verify with `parse_rap_dag.sh`; Sonnet did self-verify and got the grammar right.
+- **Net:** the skill is robust down to **Sonnet** (Opus-quality port on the fixed
+  engine); **Haiku** needs the `#@` options-field grammar made unmissable (and/or a
+  forced `parse_rap_dag` self-check) before it produces a runnable port.
