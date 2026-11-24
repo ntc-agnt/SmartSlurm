@@ -158,15 +158,17 @@ list through with the user at checkpoint 1 before emitting.
 rAP step syntax (full cheat-sheet in `references/rap-markers.md`):
 
 ```
-#@<stepNum>,<dependsOnStep>,<stepName>,,<inputsVar>,<sbatch options>
-<the step's command(s), verbatim from the original>
+#@<stepNum>,<dependsOnStep>,<stepName>,,<inputsVar>,<sbatch command>
+# e.g. — copy this exact shape (last field is a full `sbatch …` string; 0 = a root step):
+#@1,0,align,,,sbatch -p short -c 2 --mem 8G -t 2:0:0
+sh ./align.sh                 # body: the command(s) verbatim, or a `sh ./<script>.sh` call
 #@end
 ```
 Two marker fields trip conversions up — get them exact:
 - **`<dependsOnStep>`**: the step number this one waits for, or **`0`** for a root step
   with no dependency — never leave it empty.
-- **`<sbatch options>`**: the **literal `sbatch …` string**, beginning with the word
-  `sbatch` (e.g. `sbatch -p short -c 2 --mem 8G -t 2:0:0`) — not the bare flags alone.
+- **`<sbatch command>`** (last field): the **literal `sbatch …` string** — it begins
+  with the word `sbatch` (as in the example above), not the bare flags alone.
   `<inputsVar>` (the field just before it) is optional; leave it empty if unused.
 
 `for` loops around a block drive per-sample / per-chunk fan-out; the
