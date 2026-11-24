@@ -152,3 +152,16 @@ skill wording — bullets *or* a concrete example — does not move. Practical v
 **set the supported floor at Sonnet; Haiku is not viable for rAP authoring as-is.** (The
 earlier single Haiku run that got root-dep + helper-calls right was the lucky tail, not
 the mode — which is exactly why replication, not one run, is the honest measure.)
+
+### Opus vs Sonnet — style, not substance (same clean case)
+
+Diffed on identical inputs. The two ports are **functionally identical**: same DAG, same
+correct `#@` grammar (root dep `0`, full `sbatch …` string, per-step `inputsVar`),
+byte-identical verbatim step bodies, both `dag=MATCH` (both pass on the fixed engine).
+No correctness difference. The gap is **documentation density**: Opus (61 lines) writes a
+self-documenting driver — ASCII DAG diagram, per-step `# --- step N ---` banners + a
+one-line description each, and a ready-to-paste `runAsPipeline …` run command; Sonnet
+(36 lines) writes the same working pipeline lean, with a 4-line header and no per-step
+prose. Minor: Opus `#!/bin/sh` / uniform resource guesses; Sonnet `#!/bin/bash` / slightly
+more differentiated per-step sizing (lighter `sort`). Neither is "better" — a
+verbosity/explanatory trade-off on an otherwise equivalent artifact.
