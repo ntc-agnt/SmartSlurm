@@ -129,3 +129,26 @@ Findings:
 - **Net:** the skill is robust down to **Sonnet** (Opus-quality port on the fixed
   engine); **Haiku** needs the `#@` options-field grammar made unmissable (and/or a
   forced `parse_rap_dag` self-check) before it produces a runnable port.
+
+### Haiku replication (5×, concrete-snippet skill `fc60bfe`)
+
+To replace single-run anecdotes with a pass rate, Haiku was run **5 times** on the same
+clean case after the `#@` snippet was made concrete (a filled `sbatch …` example).
+
+| metric | Haiku result |
+|--------|--------------|
+| DAG recovery (M1) | 5/5 MATCH |
+| checkpoints (M4) | 5/5 PASS |
+| flagging precision | 5/5 no false alarm (one asked a good clarifying question) |
+| root dep = `0` | **1/5** |
+| options field = full `sbatch …` string | **0/5** |
+| **runnable port (M3)** | **0/5** |
+
+The concrete snippet did **not** help: the `sbatch`-prefix error is essentially
+deterministic for Haiku (0/5), so the port never runs (even on the fixed engine, since
+missing the prefix submits no jobs). The reasoning layer (DAG, checkpoints, precision)
+is reliably correct; the **format-precise grammar is a hard capability ceiling** that
+skill wording — bullets *or* a concrete example — does not move. Practical verdict:
+**set the supported floor at Sonnet; Haiku is not viable for rAP authoring as-is.** (The
+earlier single Haiku run that got root-dep + helper-calls right was the lucky tail, not
+the mode — which is exactly why replication, not one run, is the honest measure.)
