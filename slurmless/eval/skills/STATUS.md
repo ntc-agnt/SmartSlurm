@@ -18,14 +18,18 @@ from here.
 - **Engine bug brief**: `eval/skills/findings/rap-block-backslash-continuation.md` (the
   `#@end` backslash-continuation drop).
 
-## HELD — do NOT apply until the engine fix merges
-- **Relax the migration-assistant body guidance** (retire the `\`-continuation caveat →
-  "`#@end` takes arbitrary multi-line bash verbatim"). Gated on **`feat/rap-block-body`
-  merging to `master`** — that branch fixes the engine (verbatim body via quoted here-doc;
-  empirically confirmed a backslash body runs there). Until merged, the caveat is still
-  correct on master.
-- When it merges: also **reconcile the two `$SL` edits** — this branch's neutral `$SL`
-  vs. `feat/rap-block-body`'s refresh-era `$SL` rewrite (both touch the same MA section).
+## Applied / held
+- **Body-guidance relaxation: APPLIED** (2026-11-24, user-directed, assuming the engine
+  fix lands). The migration-assistant body guidance now says `#@end` takes arbitrary
+  multi-line bash verbatim (backslash continuations, pipes, nested quotes, here-docs);
+  the helper-call form is optional, not required. Freed attention redirected to the `#@`
+  **marker grammar** (root dep = `0`; the options field is the literal `sbatch …`
+  string) — the field Haiku botched in cross-model testing.
+  **Coupling:** this describes POST-fix engine behavior, so the skill must land
+  together-with or after `feat/rap-block-body`; on plain master (no fix) a backslash
+  body still breaks at runtime.
+- **Still held until the merge:** reconcile the two `$SL` edits — this branch's neutral
+  `$SL` vs. `feat/rap-block-body`'s refresh-era `$SL` rewrite (both touch the same MA section).
 
 ## Not done / next
 - **Cross-agent study** (the real generalization verdict): Codex/Cursor adapters +

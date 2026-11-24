@@ -162,6 +162,13 @@ rAP step syntax (full cheat-sheet in `references/rap-markers.md`):
 <the step's command(s), verbatim from the original>
 #@end
 ```
+Two marker fields trip conversions up — get them exact:
+- **`<dependsOnStep>`**: the step number this one waits for, or **`0`** for a root step
+  with no dependency — never leave it empty.
+- **`<sbatch options>`**: the **literal `sbatch …` string**, beginning with the word
+  `sbatch` (e.g. `sbatch -p short -c 2 --mem 8G -t 2:0:0`) — not the bare flags alone.
+  `<inputsVar>` (the field just before it) is optional; leave it empty if unused.
+
 `for` loops around a block drive per-sample / per-chunk fan-out; the
 `<dependsOnStep>` field encodes the edge.
 
@@ -187,39 +194,15 @@ mode, an optional output — become `if` blocks *around* the `#@` blocks (the st
 emitted or not), and a downstream `<dependsOnStep>` list naturally drops the steps
 that were not submitted. Do not branch *inside* a step; keep each step body faithful.
 
-**Favor a faithful, readable multi-line block — the only thing to avoid is a single
-command backslash-continued across lines.** A `#@ … #@end` block is meant to hold a
-normal, readable multi-line bash chunk: several statements on their own lines, comments,
-a loop. Prefer that — it mirrors how the user wrote the step. On a single physical line,
-quotes and `awk '…'` are preserved literally (`#@end` writes the body to a script on
-disk — the old quote-mangling is gone).
-
-The hazards (until runAsPipeline's block parser is hardened — see
-`../eval/skills/findings/rap-block-backslash-continuation.md`): rAP strips the trailing
-backslash from each body line, so it currently breaks **a single command continued
-across lines with `\`**, and anything built on that (a **pipeline split across lines**);
-an **inline here-doc** is not safe yet either. None of these show in the static DAG —
-they die only at runtime.
-
-For any of those three, keep the command on **one physical line** (however long), **or**
-put it in a **helper script** and make the body a one-line `bash <script>.sh` call:
-
-```
-#@1,0,prep,,,sbatch …              #@2,1,align,,,sbatch …
-mkdir -p out                       bash align.sh     # body = one-line call; the script
-real_tool --in a --out out/b       #@end             # holds a backslash/heredoc command
-#@end
-```
-
-- **A multi-line body of separate statements is the normal, preferred form** (`mkdir -p
-  out`, then the real command on the next line) — that is *not* a backslash continuation.
-  Comments and loops inside the block are fine.
-- **When the input is already a set of step scripts (the usual case), the simplest
-  faithful body is `bash <script>.sh [args]`** — byte-identical payloads, and it
-  sidesteps all three hazards. Reach for it when a script uses `\`-continuations, a
-  multi-line pipeline, or a here-doc.
-- **When a step needs a change you flagged and the user approved**, make the edit inside
-  the helper script (or as one physical line) — never as a `\`-continued command.
+**Write the step body as natural, readable bash — it round-trips verbatim.** A
+`#@ … #@end` block takes an ordinary multi-line bash chunk exactly as the user wrote it:
+several statements, comments, loops, pipes, nested quotes, backslash line-continuations,
+even an embedded here-doc. `#@end` emits the body byte-for-byte into the per-job script,
+so there is nothing to escape or reformat — just keep the payload faithful. Putting a
+step's commands in a helper script and calling `bash <script>.sh` is a fine style choice
+(and the obvious move when the input is already a set of step scripts), but it is **not**
+required for correctness. When a step needs a change you flagged and the user approved,
+edit it in the helper script or inline — either is fine.
 
 Verify the emitted driver's structure before running it:
 `bash "$SL/skills/migration-assistant/tools/parse_rap_dag.sh" pipeline.sh` prints the
