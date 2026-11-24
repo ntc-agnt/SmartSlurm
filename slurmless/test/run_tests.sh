@@ -1616,8 +1616,11 @@ _want end_block && {
   assert_file "smartSlurmLog/1.0.analyze.1.success" "analyze.1 succeeded"
   assert_file "smartSlurmLog/2.1.merge.success"     "merge succeeded"
   assert_file "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" "per-job script persisted on disk"
-  # submit-scope var baked ($s->1, $number->777), in-block var left literal ($label)
-  assert_contains "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" 'label="sample 1"' "submit-scope \$s baked per job"
+  # submit-scope vars baked as PREPENDED assignments ($s->1, $number->777); the body is
+  # kept VERBATIM ($label and the $s inside it stay literal) and resolves on the node.
+  assert_contains "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" '^s=1$'        "submit-scope \$s baked (prepended) per job"
+  assert_contains "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" '^number=777$' "submit-scope \$number baked (prepended)"
+  assert_contains "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" 'label="sample $s"' "in-block body kept verbatim (\$s not inlined)"
   assert_contains "smartSlurmLog/jobs/1.0.analyze.1/cmd.sh" 'processed $label'  "in-block \$label left for the node"
   assert_contains "777.1.log" "processed sample 1" "in-block var expanded on the node at run time"
 

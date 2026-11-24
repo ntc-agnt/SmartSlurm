@@ -18,6 +18,11 @@ to trip you up.
 - **Develop against one block** (`./test/run_tests.sh <block>` runs serial with live
   output); a bare `./test/run_tests.sh` runs the whole suite **in parallel** (one
   worker per core, capped at 8), so it's no longer slow — use `-j1` to force serial.
+  **The full suite gates merge:** iterate on single blocks (skip a slow one only while
+  iterating), but run the whole suite green before merging and before any change that
+  touches a production tool (`bin/`) or a shared harness mechanism — "the new block
+  passes" is not the gate; every block that exercises the change is. No shortcuts for
+  production.
 - **Scratch only.** Never aim the harness at a real `~/.smartSlurm` or a real
   cluster.
 - **The harness is code too — self-test it; don't trust its own green.** A change to

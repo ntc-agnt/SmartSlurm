@@ -36,7 +36,8 @@ repo is archived; the re-snapshot workflow is retired.
    A bare `./test/run_tests.sh` runs the whole suite **in parallel** (one worker per
    core, capped at 8) on RAM-backed scratch; `-j1` forces serial. Each worker runs
    exactly its one block. Curve-fit blocks (`scaling_*`, `noise_fit`, `contaminate_*`)
-   need `gnuplot`.
+   need `gnuplot`. Iterate on single blocks (skip a very slow one if you must), but the
+   **full suite is the merge gate** (see Hard rules).
 
 ## Golden-path commands
 
@@ -185,5 +186,12 @@ to keep in sync between them.
 - **Don't trust a green you didn't just produce.** A pass reported by a previous
   session or a context summary is not a gate — re-run it on the *actual* branch tip
   before merging, and for any fan-out change watch the process tree while it runs.
+- **The full suite gates merge — no shortcuts for production.** Iterate on single
+  blocks (and you may skip a very slow one *while iterating*), but a change that touches
+  a production tool (`bin/`) or a shared harness mechanism (the `#@`/baking path, the
+  dispatcher, `ss_activate`) is not mergeable until the **whole** suite is green on the
+  actual branch tip. "The new block passes" is not the gate — every block that exercises
+  the changed mechanism is. (The `#@end` rework shipped with two stale blocks,
+  `end_block` and `rap_shapes`, because they were never re-run.)
 - Develop slurmless **in-tree at `SmartSlurm/slurmless/`** — that is the source of
   truth. The standalone repo is archived; there is no re-snapshot step.

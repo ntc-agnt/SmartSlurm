@@ -38,7 +38,7 @@ for s in $samples; do
 
     # --- FAN-IN: merge waits for ALL 3 chunk jobs ---
     #@5,4,merge,,in,sbatch -p short -c 1 --mem 100M -t 5:00
-    tw=$(cat cc.$s.*.txt | grep -o 'words=[0-9]*' | cut -d= -f2 | awk '{ s+=\$1 } END{ print s+0 }')
+    tw=$(cat cc.$s.*.txt | grep -o 'words=[0-9]*' | cut -d= -f2 | awk '{ s+=$1 } END{ print s+0 }')
     printf 'sample=%s total_words=%s\n' "$s" "$tw" > totals.$s.txt
     #@end
 
