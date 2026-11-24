@@ -37,6 +37,19 @@ from here.
   backslash-inlined port now scores hygiene OK. Branch now contains master.
 - **Cross-model evidence banked** (`RESULTS.md`): floor = Sonnet (Opus-equivalent);
   Haiku 0/5 runnable (deterministic `#@` grammar gap, independent of the engine fix).
+- **Converter back-compat (legacy `\$` de-escaping): DONE.** Engine owner routed the
+  verbatim-body hazard to the MA converter side (a body lifted from a legacy
+  `--wrap="…"` keeps its `\$`/`` \` ``/`\"` escaping, which reaches the tool literally
+  under the byte-verbatim `#@end` body and breaks it silently — e.g. `awk '{ s+=\$1 }'`
+  dies, step exits 0, output empty). Added a provenance-gated `wrap=<yes|no>` STEP flag
+  to `emit_rap.sh` (default `no` = verbatim; `yes` applies bash double-quote unescaping
+  `\$→$ \`→\` \"→" \\→\` and prints a per-step review note). Updated `plan-format.md`
+  + the SKILL body guidance (the "nothing to escape" line now scoped to fresh bodies;
+  one exception for `--wrap`-lifted ones). New regression block **`ma_deescape`** (10/10;
+  fails 5/10 without the change) with a wrap=no literal-`\$` control + a mawk
+  negative-control. gawk absent in-container → skipped gracefully. Pairs with the
+  engine owner's separate fixture/assertion fix (`rap_shapes` `$1`, `end_block` prepend
+  contract). Not yet committed.
 
 ## Not done / next
 - **Cross-agent study** (the real generalization verdict): Codex/Cursor adapters +

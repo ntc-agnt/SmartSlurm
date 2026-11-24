@@ -26,7 +26,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Every block, in run order, and a one-line functional description of what it
 # verifies. This is the single source of truth for block purposes: _begin looks
 # the text up here, and --list prints it.
-ALL_BLOCKS="clean_2step rap_block_body pipeline_tag pipeline_fuzz legacy_curation parallel_worker_isolation rap_self_location wf_afterok wf_scriptargs wf_depgrammar wf_arrays wf_wait wf_scancel wf_inject wf_tiered wf_pipeline wf_isolation wf_jobseq wf_exit0_empty ma_extract_dag ma_emit_rap ma_parse_dag ma_compare ma_differential nested_fanout ragged_axes rap_shapes fail_exit0_empty known_broken_swallowed_done \
+ALL_BLOCKS="clean_2step rap_block_body pipeline_tag pipeline_fuzz legacy_curation parallel_worker_isolation rap_self_location wf_afterok wf_scriptargs wf_depgrammar wf_arrays wf_wait wf_scancel wf_inject wf_tiered wf_pipeline wf_isolation wf_jobseq wf_exit0_empty ma_extract_dag ma_emit_rap ma_parse_dag ma_compare ma_differential ma_deescape nested_fanout ragged_axes rap_shapes fail_exit0_empty known_broken_swallowed_done \
 loop_detection oom_injection tool_stderr diagnose fate_reconcile hardkill oomoot_escalate rerun rerun_lifecycle end_block verbosity scaling_linear \
 noise_fit scaling_exp contaminate_exit0 contaminate_exclude contaminate_prune firstpass_rate \
 failure_floor manual_rerun_floor constant_model negslope_robust \
@@ -78,6 +78,7 @@ ss_purpose() {
     ma_emit_rap)        echo "Migration Assistant skill: emit_rap.sh renders a logical plan into an annotated rAP script; round-trip — the emitted pipeline runs under runAsPipeline and reproduces the original's outputs";;
     ma_parse_dag)       echo "Migration Assistant skill: parse_rap_dag.sh reads an rAP driver's #@ step DAG back (dependency step-numbers resolved to names), round-tripping emit_rap and resolving dot-joined multi-deps";;
     ma_compare)         echo "Migration Assistant skill: compare_outputs.sh diffs two runs' authoritative outputs under an identity contract — matches, normalizes volatile fields, flags real diffs and present-in-one-only";;
+    ma_deescape)        echo "Migration Assistant skill: emit_rap.sh de-escapes a body lifted from a legacy --wrap=\"…\" (wrap=yes: \\\$ \\\` \\\" -> verbatim), so an awk/sed field-ref guard doesn't reach the verbatim #@end body literally and break the tool silently; wrap=no keeps a legitimate literal \\\$; de-escaped port runs to the right fan-in sum under each installed awk";;
     ma_differential)    echo "Migration Assistant skill: full Scenario-2 — run the ORIGINAL (wf-mode) and its rAP PORT in isolated workspaces and confirm identical authoritative outputs under a contract";;
     nested_fanout)      echo "Nested per-sample/per-chrom loops — a fan-out step (one grid cell backs multiple jobs) converts to valid bash and every job completes";;
     ragged_axes)        echo "Two steps whose loop axes are disjoint (sample ids vs group ids) — ragged addressing converts and runs end-to-end";;
@@ -889,6 +890,62 @@ C
   sed 's/^/    /' cmp.out
   assert_contains cmp.out "RESULT: MATCH"  "original and rAP port produce identical authoritative outputs"
   assert_rc 0 "$crc"                        "differential comparison passes"
+  echo
+}
+
+# ===========================================================================
+# Migration Assistant skill — emit_rap.sh must DE-ESCAPE a body lifted from a legacy
+# --wrap="…" command (wrap=yes). A #@end body is emitted verbatim, so --wrap-era
+# escaping (\$, \`, \") travels into the body and reaches the tool literally, breaking
+# it SILENTLY (awk dies on the stray \, step exits 0, output empty). The classic case
+# is an awk field-ref guard `s+=\$1`. Asserts: wrap=yes de-escapes + notes the step;
+# wrap=no keeps a legitimate literal \$ verbatim; the de-escaped port runs to the right
+# fan-in sum; and the de-escaped field-ref actually runs under each installed awk while
+# the escaped form (a naive lift) would have died. Regression guard for the converter
+# side of the verbatim-body back-compat hazard (findings/rap-verbatim-body-*).
+_want ma_deescape && {
+  _begin ma_deescape
+  ss_new_workspace "$WORK/ma_deescape"
+  emit="$HERE/../skills/migration-assistant/tools/emit_rap.sh"
+  printf 'one two three\n' > doc.a; printf 'four five\n' > doc.b   # 3 + 2 = 5 words
+  # Plan: a wrap=yes merge lifted from a legacy --wrap (awk '{ s+=\$1 }'), plus a
+  # wrap=no control body that legitimately wants a literal \$ (must stay verbatim).
+  printf '%s\n' \
+    'SAMPLES a b' \
+    'SBATCH  sbatch -p short -c 1 --mem 100M -t 5:00' \
+    'STEP count dep=-     fanout=yes in=none' \
+    '    wc -w < doc.$s > n.$s' \
+    'STEP merge dep=count fanout=no  in=none wrap=yes' \
+    "    tw=\$(cat n.* | awk '{ s+=\\\$1 } END{ print s+0 }')" \
+    '    printf "total_words=%s\n" "$tw" > totals.txt' \
+    'STEP lit   dep=merge fanout=no  in=none' \
+    '    echo "price \$5" > price.txt' \
+    > plan.txt
+  bash "$emit" plan.txt > pipeline.sh 2> emit.err
+  # (1) the wrap=yes body is de-escaped; no legacy backslash survives
+  assert_valid_bash "pipeline.sh"                "emitted rAP script is valid bash"
+  assert_contains  "pipeline.sh" 's+=$1'         "wrap=yes de-escaped the awk field-ref (\\\$1 -> \$1)"
+  assert_lacks     "pipeline.sh" 's+=\\$1'       "no legacy --wrap backslash survives in the merge body"
+  # (2) it told the agent, naming the step (migration is supervised)
+  assert_contains  "emit.err" "step merge"       "emit_rap noted the de-escape, naming the step"
+  assert_contains  "emit.err" "de-escaped"       "the note says what it did"
+  # (3) wrap=no control stays verbatim -- a legitimate literal \$ is NOT touched
+  assert_contains  "pipeline.sh" 'price \\$5'    "wrap=no body kept its literal \\\$ verbatim (no blind de-escape)"
+  # (4) the de-escaped port RUNS and reproduces the correct fan-in sum (5)
+  ss_run_pipeline "./pipeline.sh" "sbatch -p short -c 1 --mem 100M -t 5:00"; rc=$?
+  assert_rc "$rc" 0                              "de-escaped rAP port runs under runAsPipeline"
+  assert_contains "totals.txt" "total_words=5"   "fan-in sum correct after de-escape"
+  # (5) WHY it matters: the de-escaped field-ref runs under each installed awk; the
+  # escaped form (a naive verbatim lift) dies -- the silent-bug root cause.
+  printf '3\n2\n' > nums
+  for awkbin in mawk gawk; do
+    command -v "$awkbin" >/dev/null 2>&1 || { echo "    (skip $awkbin: not installed)"; continue; }
+    got=$("$awkbin" '{ s+=$1 } END{ print s+0 }' < nums 2>/dev/null)
+    assert_rc 5 "$got"                           "de-escaped field-ref sums correctly under $awkbin"
+  done
+  if mawk '{ s+=\$1 } END{ print s+0 }' < nums >/dev/null 2>&1
+    then _fail "escaped \\\$1 breaks mawk (negative control)" "mawk unexpectedly accepted the stray backslash"
+    else _pass "escaped \\\$1 breaks mawk -- why wrap=yes de-escape is required"; fi
   echo
 }
 

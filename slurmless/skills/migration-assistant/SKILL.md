@@ -200,11 +200,25 @@ that were not submitted. Do not branch *inside* a step; keep each step body fait
 `#@ … #@end` block takes an ordinary multi-line bash chunk exactly as the user wrote it:
 several statements, comments, loops, pipes, nested quotes, backslash line-continuations,
 even an embedded here-doc. `#@end` emits the body byte-for-byte into the per-job script,
-so there is nothing to escape or reformat — just keep the payload faithful. Putting a
-step's commands in a helper script and calling `bash <script>.sh` is a fine style choice
-(and the obvious move when the input is already a set of step scripts), but it is **not**
-required for correctness. When a step needs a change you flagged and the user approved,
-edit it in the helper script or inline — either is fine.
+so a body you write fresh needs no escaping or reformatting — just keep the payload
+faithful. Putting a step's commands in a helper script and calling `bash <script>.sh`
+is a fine style choice (and the obvious move when the input is already a set of step
+scripts), but it is **not** required for correctness. When a step needs a change you
+flagged and the user approved, edit it in the helper script or inline — either is fine.
+
+**One exception — a body LIFTED from a legacy `--wrap="…"` command must be de-escaped.**
+Because `#@end` is verbatim, escaping that was there only to survive the old
+double-quoted `--wrap` path travels into the new body and reaches the tool literally,
+breaking it **silently** (exit 0, empty/wrong output). The classic case is a field-ref
+guard: `awk '{ s+=\$1 }'` — correct under `--wrap`, but under verbatim `#@end` `awk`
+dies on the stray `\` and the sum is never written. When you move such a one-liner into
+a step, drop the now-wrong escaping (`\$`→`$`, `` \` ``→`` ` ``, `\"`→`"`). Mark that STEP
+`wrap=yes` in the plan and `emit_rap.sh` does it for you — applying bash's double-quote
+unescaping and printing a note naming the step so you can review it. **Do not** set
+`wrap=yes` (or hand-de-escape) a body you authored fresh that *wants* a literal `\$`
+(e.g. `echo "price \$5"`); the default verbatim emit is correct there. If unsure whether
+a lifted body carries `--wrap`-era escaping, grep it for `\$`/`` \` ``/`\"` and decide
+per occurrence.
 
 Verify the emitted driver's structure before running it:
 `bash "$SL/skills/migration-assistant/tools/parse_rap_dag.sh" pipeline.sh` prints the
