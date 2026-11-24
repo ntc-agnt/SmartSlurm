@@ -27,11 +27,14 @@ from here.
   `e9e4cf5`): verbatim `#@end` body via quoted here-doc + terminator-collision +
   paste-gremlin hardening.** Confirmed 2026-11-24: a real backslash-inlined port (Sonnet)
   runs green on master; the relaxed skill now matches the engine. Coupling resolved.
-- **Now actionable — `$SL` reconciliation.** `origin/master` now carries
-  `feat/rap-block-body`'s refresh-era `$SL` edit; when `claude/new-session-twkn7x` merges
-  to master, reconcile it against this branch's neutral `$SL` (expect a conflict in the
-  MA `$SL` section). Not yet done — it's a large merge (PR #154 also pulled the ld32/ai
-  UX overhaul, jobRecords-18-col, AI detection).
+- **`$SL` reconciliation: DONE** (merge `dc550b8`, 2026-11-24). Merged `origin/master`
+  (PR #154 + the ld32/ai UX overhaul, jobRecords-18-col, AI detection) into this branch.
+  The two SKILL.md conflicts were resolved: kept this branch's **neutral `$SL`**
+  (migration-assistant), took master's **superset** harness skill (its new "Running the
+  suite" section); all my additions survived (compatibility frontmatter, body
+  relaxation, `#@` grammar, degraded-mode gate). Eval framework re-validated on the
+  merged engine: M1 2/2, demo_fanin MATCH/MATCH/OK, chipseq reference OK, and a
+  backslash-inlined port now scores hygiene OK. Branch now contains master.
 - **Cross-model evidence banked** (`RESULTS.md`): floor = Sonnet (Opus-equivalent);
   Haiku 0/5 runnable (deterministic `#@` grammar gap, independent of the engine fix).
 
