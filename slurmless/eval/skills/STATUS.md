@@ -18,18 +18,22 @@ from here.
 - **Engine bug brief**: `eval/skills/findings/rap-block-backslash-continuation.md` (the
   `#@end` backslash-continuation drop).
 
-## Applied / held
-- **Body-guidance relaxation: APPLIED** (2026-11-24, user-directed, assuming the engine
-  fix lands). The migration-assistant body guidance now says `#@end` takes arbitrary
-  multi-line bash verbatim (backslash continuations, pipes, nested quotes, here-docs);
-  the helper-call form is optional, not required. Freed attention redirected to the `#@`
-  **marker grammar** (root dep = `0`; the options field is the literal `sbatch …`
-  string) — the field Haiku botched in cross-model testing.
-  **Coupling:** this describes POST-fix engine behavior, so the skill must land
-  together-with or after `feat/rap-block-body`; on plain master (no fix) a backslash
-  body still breaks at runtime.
-- **Still held until the merge:** reconcile the two `$SL` edits — this branch's neutral
-  `$SL` vs. `feat/rap-block-body`'s refresh-era `$SL` rewrite (both touch the same MA section).
+## Applied / confirmed
+- **Body-guidance relaxation: APPLIED + CONFIRMED.** The migration-assistant body guidance
+  says `#@end` takes arbitrary multi-line bash verbatim (backslash continuations, pipes,
+  nested quotes, here-docs); helper-call form optional. Freed attention redirected to the
+  `#@` **marker grammar** (root dep = `0`; options field = literal `sbatch …` string) —
+  the field Haiku botched. **The block-syntax fix landed in `origin/master` (PR #154,
+  `e9e4cf5`): verbatim `#@end` body via quoted here-doc + terminator-collision +
+  paste-gremlin hardening.** Confirmed 2026-11-24: a real backslash-inlined port (Sonnet)
+  runs green on master; the relaxed skill now matches the engine. Coupling resolved.
+- **Now actionable — `$SL` reconciliation.** `origin/master` now carries
+  `feat/rap-block-body`'s refresh-era `$SL` edit; when `claude/new-session-twkn7x` merges
+  to master, reconcile it against this branch's neutral `$SL` (expect a conflict in the
+  MA `$SL` section). Not yet done — it's a large merge (PR #154 also pulled the ld32/ai
+  UX overhaul, jobRecords-18-col, AI detection).
+- **Cross-model evidence banked** (`RESULTS.md`): floor = Sonnet (Opus-equivalent);
+  Haiku 0/5 runnable (deterministic `#@` grammar gap, independent of the engine fix).
 
 ## Not done / next
 - **Cross-agent study** (the real generalization verdict): Codex/Cursor adapters +
